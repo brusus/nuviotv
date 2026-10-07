@@ -1,7 +1,7 @@
 import java.util.Properties
 
 plugins {
-    id("com.android.library")
+    id("com.android.library") apply false
 }
 
 val localProperties = Properties().apply {
@@ -19,17 +19,20 @@ fun localPath(name: String): String? {
 val ffmpegSourceDir = localPath("FFMPEG_SOURCE_DIR")
 val ffmpegBuildDir = localPath("FFMPEG_BUILD_DIR")
 
-android {
-    namespace = "androidx.media3.decoder.ffmpeg"
-    compileSdk = 36
-    ndkVersion = "29.0.14206865"
+// Only configure this module if FFmpeg paths are provided
+if (!ffmpegSourceDir.isNullOrBlank() && !ffmpegBuildDir.isNullOrBlank()) {
+    plugins.apply("com.android.library")
 
-    defaultConfig {
-        minSdk = 24
+    android {
+        namespace = "androidx.media3.decoder.ffmpeg"
+        compileSdk = 36
+        ndkVersion = "29.0.14206865"
 
-        externalNativeBuild {
-            cmake {
-                if (!ffmpegSourceDir.isNullOrBlank() && !ffmpegBuildDir.isNullOrBlank()) {
+        defaultConfig {
+            minSdk = 24
+
+            externalNativeBuild {
+                cmake {
                     arguments += listOf(
                         "-DFFMPEG_SOURCE_DIR=$ffmpegSourceDir",
                         "-DFFMPEG_BUILD_DIR=$ffmpegBuildDir"
@@ -37,29 +40,29 @@ android {
                 }
             }
         }
-    }
 
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
+        compileOptions {
+            sourceCompatibility = JavaVersion.VERSION_11
+            targetCompatibility = JavaVersion.VERSION_11
+        }
 
-    buildFeatures {
-        buildConfig = false
-    }
+        buildFeatures {
+            buildConfig = false
+        }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/jni/CMakeLists.txt")
-            version = "3.22.1"
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/jni/CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
     }
-}
 
-dependencies {
-    api(libs.media3.decoder)
-    implementation(libs.media3.common)
-    compileOnly(files("../app/libs/lib-exoplayer-release.aar"))
-    implementation("androidx.annotation:annotation:1.9.1")
-    compileOnly("org.checkerframework:checker-qual:3.48.4")
+    dependencies {
+        api(libs.media3.decoder)
+        implementation(libs.media3.common)
+        compileOnly(files("../app/libs/lib-exoplayer-release.aar"))
+        implementation("androidx.annotation:annotation:1.9.1")
+        compileOnly("org.checkerframework:checker-qual:3.48.4")
+    }
 }

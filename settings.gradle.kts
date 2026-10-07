@@ -26,4 +26,7 @@ dependencyResolutionManagement {
 rootProject.name = "My Application"
 include(":app")
 include(":baselineprofile")
-include(":ffmpeg-decoder-downmix")
+// Note: ffmpeg-decoder-downmix is excluded by default. To enable it:
+// 1. Add FFMPEG_SOURCE_DIR and FFMPEG_BUILD_DIR to local.properties
+// 2. Set USE_LOCAL_FFMPEG_DECODER=true in local.properties
+// See local.example.properties for details.

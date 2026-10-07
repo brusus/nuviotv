@@ -186,15 +186,13 @@ internal fun PlayerRuntimeController.initializePlayer(
                 )
             }
             resetLoadingOverlayForNewStream()
+            refreshChannelZapAvailability()
             if (startPaused) {
                 userPausedManually = true
                 shouldEnforceAutoplayOnFirstReady = false
             }
             val applyPcmFallbackOnStartup = pendingAudioPcmFallbackRebuild
             val applyDv7FallbackOnStartup = forceDv7ToHevc
-            if (!applyPcmFallbackOnStartup) {
-                hasTriedAudioPcmFallback = false
-            }
             hasTriedDv7HevcFallback = false
             forceDv7ToHevc = false
             mpvDelayStartAfterAfrSwitch = false
@@ -1357,6 +1355,11 @@ internal fun PlayerRuntimeController.initializePlayer(
                             return
                         }
 
+                        // Live channels reconnect on network glitches instead of ending.
+                        if (tryLiveStreamRecovery(error)) {
+                            return
+                        }
+
                         // Error handlers: DV codec failures, audio decoder issues, codec state errors.
                         if (error.isDolbyVisionDecoderFailure() && !isMapDv7ToHevcActiveForCurrentPlayback) {
                             // Manual Convert-to-DV8.1 mode 2 failed to decode: try
@@ -1993,10 +1996,6 @@ internal fun PlayerRuntimeController.resetLoadingOverlayForNewStream() {
     hasMarkedCurrentEpisodeCompleted = false
     shouldEnforceAutoplayOnFirstReady = true
     userPausedManually = false
-    timeoutRecoveryAttempts = 0
-    hasRetriedCurrentStreamAfterUnexpectedNpe = false
-    hasRetriedCurrentStreamAfterMediaPeriodHolderCrash = false
-    hasRetriedCurrentStreamAfter416 = false
     hasAttemptedDv7ToDv81ForCurrentPlayback = false
     isExperimentalDv7ToDv81ActiveForCurrentPlayback = false
     isVc1SoftwareFallbackActiveForCurrentPlayback = false

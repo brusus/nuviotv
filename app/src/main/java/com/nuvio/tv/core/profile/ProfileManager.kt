@@ -39,6 +39,16 @@ class ProfileManager @Inject constructor(
         .map { true }
         .stateIn(scope, SharingStarted.Eagerly, false)
 
+    /**
+     * Suspends until [activeProfileId] holds the persisted profile rather than its initial
+     * placeholder (1). Startup work that reads or writes per-profile data must wait for
+     * this, or it silently runs against profile 1 for users whose last profile is another.
+     */
+    suspend fun awaitActiveProfileLoaded(): Int {
+        val persisted = profileDataStore.activeProfileId.first()
+        return activeProfileId.first { it == persisted }
+    }
+
     val hasEverSelectedProfile: StateFlow<Boolean> = profileDataStore.hasEverSelectedProfile
         .stateIn(scope, SharingStarted.Eagerly, false)
 

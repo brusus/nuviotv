@@ -830,6 +830,8 @@ internal fun PlayerRuntimeController.maybeScheduleStallWatchdog() {
     stallWatchdogJob = scope.launch {
         var lastBufferedPosition = player.bufferedPosition
         var lastAdvanceAtMs = System.currentTimeMillis()
+        var seekAttempts = 0
+        val maxSeekAttempts = 3
 
         while (isActive) {
             delay(PlayerRuntimeController.STALL_WATCHDOG_POLL_INTERVAL_MS)
@@ -845,6 +847,7 @@ internal fun PlayerRuntimeController.maybeScheduleStallWatchdog() {
                 // Real progress — reset the stall timer.
                 lastBufferedPosition = bufferedNow
                 lastAdvanceAtMs = nowMs
+                seekAttempts = 0  // Reset retry counter on progress
                 continue
             }
 
@@ -888,14 +891,19 @@ internal fun PlayerRuntimeController.maybeScheduleStallWatchdog() {
                     return@launch
                 }
                 is PlayerStallWatchdogPolicy.Decision.SeekPastBufferedEdge -> {
+                    seekAttempts++
                     Log.w(
                         PlayerRuntimeController.TAG,
                         "STALL_WATCHDOG: bufferedPosition stuck at $bufferedNow for ${stalledForMs}ms " +
                             "during STATE_BUFFERING (playhead=${livePlayer.currentPosition.coerceAtLeast(0L)}); " +
-                            "seeking past buffered edge to ${decision.targetMs} to break stuck request"
+                            "seeking past buffered edge to ${decision.targetMs} (${seekAttempts}/$maxSeekAttempts attempts)"
                     )
                     livePlayer.seekTo(decision.targetMs)
-                    return@launch
+                    // Reset stall timer after seek to give player time to recover
+                    lastBufferedPosition = livePlayer.bufferedPosition
+                    lastAdvanceAtMs = System.currentTimeMillis()
+                    // Continue monitoring instead of exiting - the loop will check again
+                    // on next poll interval or if buffering resolves
                 }
             }
         }

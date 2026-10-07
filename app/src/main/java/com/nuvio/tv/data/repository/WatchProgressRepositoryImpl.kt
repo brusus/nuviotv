@@ -1171,17 +1171,18 @@ class WatchProgressRepositoryImpl @Inject constructor(
                 val hasNewData = posterToSave != null || backdropToSave != null
                     || metadata.logo != null || durationMs > 0
                 if (hasNewData) {
-                    watchProgressPreferences.saveProgress(
-                        progress.copy(
-                            poster = posterToSave,
-                            backdrop = backdropToSave,
-                            logo = progress.logo ?: metadata.logo,
-                            name = progress.name.takeIf { it.isNotBlank() && it != progress.contentId }
-                                ?: metadata.name ?: progress.name,
-                            duration = if (durationMs > 0) durationMs else progress.duration
-                        ),
-                        profileId = profileId
-                    )
+                    // Merge into the entry as stored now: the player may have saved a newer
+                    // position (or the user removed the item) during the network calls above.
+                    watchProgressPreferences.updateExistingProgress(progress, profileId) { latest ->
+                        latest.copy(
+                            poster = latest.poster ?: posterToSave,
+                            backdrop = latest.backdrop ?: backdropToSave,
+                            logo = latest.logo ?: metadata.logo,
+                            name = latest.name.takeIf { it.isNotBlank() && it != latest.contentId }
+                                ?: metadata.name ?: latest.name,
+                            duration = latest.duration.takeIf { it > 0 } ?: durationMs
+                        )
+                    }
                 }
             }.onFailure { Log.w(TAG, "Progress artwork hydration failed for ${progress.contentId}", it) }
         }

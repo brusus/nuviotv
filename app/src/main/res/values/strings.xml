@@ -2328,6 +2328,7 @@
     <string name="nav_home">Home</string>
     <string name="nav_discover">Discover</string>
     <string name="nav_search">Search</string>
+    <string name="nav_plugins">Plugins</string>
     <string name="nav_live_tv">Live TV</string>
     <string name="nav_iptv">IPTV</string>
     <string name="nav_library">Library</string>
@@ -2348,6 +2349,12 @@
     <!-- IptvScreen / IptvSettingsScreen -->
     <string name="iptv_title">IPTV</string>
     <string name="iptv_subtitle">Your own M3U playlist</string>
+    <string name="iptv_player_channel_list_title">Channels</string>
+    <string name="iptv_source_personal">My playlist</string>
+    <string name="iptv_source_world">World</string>
+    <string name="iptv_country_picker_title">Choose a country</string>
+    <string name="iptv_banner_now">Now: %1$s</string>
+    <string name="iptv_banner_next">Next: %1$s</string>
     <string name="iptv_error_not_configured">No playlist configured yet. Add your M3U playlist URL in settings.</string>
     <string name="iptv_open_settings">Open settings</string>
     <string name="iptv_error_load_failed">Couldn\'t load the playlist. Check the URL and your connection.</string>

@@ -194,7 +194,45 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                         durationMs = playerDuration
                     )
                     val playingNow = view.isPlayingNow()
-                    val cacheBuffering = view.isPausedForCacheNow() || view.isCoreIdleNow()
+                    val pausedForCache = view.isPausedForCacheNow()
+                    val coreIdleNow = view.isCoreIdleNow()
+                    // Track persistent core-idle state - when the player is stuck in idle
+                    // for too long, it indicates playback has stopped rather than buffering.
+                    if (coreIdleNow && hasRenderedFirstFrame && !userPausedManually) {
+                        // Initialize tracker on first detection of core-idle, or use existing start time
+                        mpvCoreIdleStartedAtMs = when {
+                            mpvCoreIdleStartedAtMs <= 0 -> System.currentTimeMillis()
+                            else -> mpvCoreIdleStartedAtMs.coerceAtMost(System.currentTimeMillis())
+                        }
+                        val coreIdleDurationMs = System.currentTimeMillis() - mpvCoreIdleStartedAtMs
+                        // If core-idle persists beyond the failover threshold, treat as ended.
+                        if (coreIdleDurationMs >= MPV_STALL_FAILOVER_THRESHOLD_MS) {
+                            Log.w(
+                                PlayerRuntimeController.TAG,
+                                "MPV_CORE_IDLE_END: player stuck in core-idle for ${coreIdleDurationMs}ms"
+                            )
+                            mpvCoreIdleStartedAtMs = 0L
+                            // Mark as ended so UI can show appropriate state instead of frozen loading bar
+                            _uiState.update { state ->
+                                if (!state.playbackEnded) {
+                                    state.copy(
+                                        isBuffering = false,
+                                        showLoadingOverlay = false,
+                                        playbackEnded = true,
+                                        playbackError = playbackError(
+                                            "Playback stopped: player stuck in core-idle",
+                                            PlaybackErrorKind.PLAYER
+                                        )
+                                    )
+                                } else state
+                            }
+                            continue
+                        }
+                    } else if (!coreIdleNow) {
+                        // Core-idle has resolved, reset the tracker
+                        mpvCoreIdleStartedAtMs = 0L
+                    }
+                    val cacheBuffering = pausedForCache || coreIdleNow
                     var firstFrameReady = hasRenderedFirstFrame
                     if (!firstFrameReady) {
                         firstFrameReady = pos > 0L || (playingNow && !cacheBuffering && playerDuration > 0L)
@@ -329,6 +367,15 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     evaluatePostPlayOverlayVisibility(
                         positionMs = pos,
                         durationMs = playerDuration.coerceAtLeast(0L)
+                    )
+                }
+
+                // Check for ExoPlayer playback stall (same logic as MPV but using bufferedPosition)
+                if (!player.isPlaying && hasRenderedFirstFrame) {
+                    maybeHandleExoPlayerMidPlaybackStall(
+                        bufferedPositionMs = player.bufferedPosition.coerceAtLeast(0L),
+                        isBufferingNow = player.playbackState == androidx.media3.common.Player.STATE_BUFFERING,
+                        isLive = player.isCurrentMediaItemLive
                     )
                 }
 
@@ -1385,6 +1432,10 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
                 scope.launch { trackPreferenceDataStore.savePlaybackSpeed(id, event.speed) }
             }
         }
+        is PlayerEvent.OnZapChannel -> zapToChannel(event.delta)
+        PlayerEvent.OnShowChannelList -> showChannelList()
+        PlayerEvent.OnDismissChannelList -> dismissChannelList()
+        is PlayerEvent.OnSelectChannel -> selectChannel(event.streamUrl)
         PlayerEvent.OnToggleControls -> {
             if (_uiState.value.showSubtitleTimingDialog) {
                 dismissSubtitleTimingDialog()

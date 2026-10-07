@@ -375,7 +375,9 @@ class StreamRepositoryImpl @Inject constructor(
                 videoId.startsWith("tt", ignoreCase = true) -> videoId.substringBefore(':')
                 else -> videoId
             },
-            mediaType = type.lowercase(),
+            // Same "tv" naming as the TMDB path: scrapers switch on movie/tv, and a raw
+            // "series" made every series lookup miss whenever TMDB resolution failed.
+            mediaType = normalizeTmdbPluginType(type),
             source = videoId.substringBefore(":").uppercase()
         )
     }

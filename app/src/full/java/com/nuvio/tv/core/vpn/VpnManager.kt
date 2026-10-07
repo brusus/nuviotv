@@ -10,15 +10,20 @@ import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -89,8 +94,26 @@ class VpnManager @Inject constructor(
     private val _permissionRequest = MutableStateFlow<Intent?>(null)
     val permissionRequest: StateFlow<Intent?> = _permissionRequest.asStateFlow()
 
+    private val operationMutex = Mutex()
+    private var operationJob: Job? = null
+
+    /**
+     * Runs connect/disconnect/permission-retry one at a time, newest wins: a new operation
+     * cancels the in-flight one and waits for it before touching the tunnel. Without this a
+     * disconnect pressed during the handshake wait could be overtaken by the still-running
+     * connect, bringing the tunnel back up after the user turned it off.
+     */
+    @Synchronized
+    private fun launchOperation(block: suspend () -> Unit) {
+        val previous = operationJob
+        operationJob = scope.launch {
+            previous?.cancelAndJoin()
+            operationMutex.withLock { block() }
+        }
+    }
+
     fun connect() {
-        scope.launch {
+        launchOperation {
             _errorMessage.value = null
             _connectionState.value = VpnConnectionState.CONNECTING
             // Reflects user intent ("I want the VPN on"), not whether this particular
@@ -102,7 +125,7 @@ class VpnManager @Inject constructor(
             if (rawConfig.isBlank()) {
                 _connectionState.value = VpnConnectionState.ERROR
                 _errorMessage.value = "no_config"
-                return@launch
+                return@launchOperation
             }
             val scopedConfig = try {
                 buildScopedConfig(rawConfig)
@@ -110,7 +133,7 @@ class VpnManager @Inject constructor(
                 Log.w(TAG, "Failed to parse WireGuard config", e)
                 _connectionState.value = VpnConnectionState.ERROR
                 _errorMessage.value = e.message ?: "invalid_config"
-                return@launch
+                return@launchOperation
             }
             try {
                 // Switching config (or reconnecting) while a tunnel is already up: bring it
@@ -128,13 +151,16 @@ class VpnManager @Inject constructor(
                     if (_permissionRequest.value == null) {
                         // Permission was already granted between the check inside setState
                         // and here - just retry once instead of surfacing a dead-end error.
-                        retryAfterPermission()
+                        bringUpAfterPermission()
                     }
                 } else {
                     Log.w(TAG, "VPN backend error: ${e.reason}", e)
                     _connectionState.value = VpnConnectionState.ERROR
                     _errorMessage.value = e.reason.name
                 }
+            } catch (e: CancellationException) {
+                // Superseded by a newer connect/disconnect - that operation sets the state.
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to bring tunnel up", e)
                 _connectionState.value = VpnConnectionState.ERROR
@@ -144,7 +170,7 @@ class VpnManager @Inject constructor(
     }
 
     fun disconnect() {
-        scope.launch {
+        launchOperation {
             preferences.setAutoConnect(false)
             try {
                 backend.setState(tunnel, Tunnel.State.DOWN, null)
@@ -218,7 +244,14 @@ class VpnManager @Inject constructor(
     fun onPermissionResult(granted: Boolean) {
         _permissionRequest.value = null
         if (granted) {
-            retryAfterPermission()
+            launchOperation {
+                // The user may have pressed disconnect while the consent dialog was open.
+                if (preferences.autoConnect.first()) {
+                    bringUpAfterPermission()
+                } else {
+                    _connectionState.value = VpnConnectionState.DISCONNECTED
+                }
+            }
         } else {
             _connectionState.value = VpnConnectionState.ERROR
             _errorMessage.value = "permission_denied"
@@ -228,24 +261,26 @@ class VpnManager @Inject constructor(
         }
     }
 
-    private fun retryAfterPermission() {
-        scope.launch {
-            val rawConfig = preferences.config.first()
-            val scopedConfig = try {
-                buildScopedConfig(rawConfig)
-            } catch (e: Exception) {
-                _connectionState.value = VpnConnectionState.ERROR
-                _errorMessage.value = e.message ?: "invalid_config"
-                return@launch
-            }
-            try {
-                backend.setState(tunnel, Tunnel.State.UP, scopedConfig)
-                bringUpConfirmedOrRevert(scopedConfig)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to bring tunnel up after permission grant", e)
-                _connectionState.value = VpnConnectionState.ERROR
-                _errorMessage.value = e.message ?: "connect_failed"
-            }
+    /** Must run inside [launchOperation] (directly or from connect()'s own operation). */
+    private suspend fun bringUpAfterPermission() {
+        val rawConfig = preferences.config.first()
+        val scopedConfig = try {
+            buildScopedConfig(rawConfig)
+        } catch (e: Exception) {
+            _connectionState.value = VpnConnectionState.ERROR
+            _errorMessage.value = e.message ?: "invalid_config"
+            return
+        }
+        try {
+            _connectionState.value = VpnConnectionState.CONNECTING
+            backend.setState(tunnel, Tunnel.State.UP, scopedConfig)
+            bringUpConfirmedOrRevert(scopedConfig)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to bring tunnel up after permission grant", e)
+            _connectionState.value = VpnConnectionState.ERROR
+            _errorMessage.value = e.message ?: "connect_failed"
         }
     }
 

@@ -18,8 +18,17 @@ class DebridFormatterConfigServer(
 ) : NanoHTTPD(port) {
     private val gson = Gson()
     private val settingsMapType = object : TypeToken<Map<String, Any?>>() {}.type
+    private val access = ConfigServerAccess()
+
+    /** URL for the QR code: the only way to obtain this server's access token. */
+    fun accessUrl(baseUrl: String): String = access.accessUrl(baseUrl)
 
     override fun serve(session: IHTTPSession): Response {
+        access.rejectIfUnauthorized(session)?.let { return it }
+        return access.withSessionCookie(route(session))
+    }
+
+    private fun route(session: IHTTPSession): Response {
         return when {
             session.method == Method.GET && session.uri == "/" -> serveWebPage()
             session.method == Method.GET && session.uri == "/logo.png" -> serveLogo()
@@ -108,7 +117,8 @@ class DebridFormatterConfigServer(
 
     private fun readUtf8Body(session: IHTTPSession): String {
         val length = session.headers["content-length"]?.toIntOrNull() ?: return ""
-        if (length <= 0) return ""
+        // Bounded: see StreamBadgeConfigServer.readUtf8Body.
+        if (length <= 0 || length > MAX_CONFIG_BODY_BYTES) return ""
         val buffer = ByteArray(length)
         var offset = 0
         while (offset < length) {

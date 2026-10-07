@@ -98,7 +98,7 @@ val releaseStorePasswordValue = env("NUVIO_RELEASE_STORE_PASSWORD")
 android {
     namespace = "com.nuvio.tv"
     compileSdk = 36
-    ndkVersion = "29.0.14206865"
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.nuvio.tv"
@@ -281,6 +281,12 @@ android {
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
             isUniversalApk = true
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Native debugging enabled by default for debug builds
         }
     }
 
@@ -482,7 +488,14 @@ dependencies {
     ))
     add("fullImplementation", files("libs/lib-decoder-iamf-release.aar"))
     if (useLocalFfmpegDecoder) {
-        implementation(project(":ffmpeg-decoder-downmix"))
+        // Only use local FFmpeg decoder if the module exists and is configured
+        val ffmpegModuleExists = gradle.rootProject.findProject(":ffmpeg-decoder-downmix") != null
+        if (ffmpegModuleExists) {
+            implementation(project(":ffmpeg-decoder-downmix"))
+        } else {
+            // Fallback to prebuilt AAR when module isn't available
+            implementation(files("libs/lib-decoder-ffmpeg-release.aar"))
+        }
     } else {
         implementation(files("libs/lib-decoder-ffmpeg-release.aar"))
     }

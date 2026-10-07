@@ -58,6 +58,7 @@ private const val MAX_RESPONSE_SIZE = 5 * 1024 * 1024L
 // outside of loadLinks (e.g. slow TMDB enrichment, slow search). Generous to avoid
 // cancelling the runner's coroutine before it can return accumulated links.
 private const val SCRAPER_TIMEOUT_MS = 120_000L
+private const val MAX_TEST_LOG_LINES = 60
 private const val MANIFEST_SUFFIX = "/manifest.json"
 // A transient network blip (e.g. the app's connections being re-routed mid-request when a
 // VPN tunnel comes up or DNS taking a moment to settle) used to permanently drop a scraper
@@ -312,17 +313,29 @@ class PluginManager @Inject constructor(
      * later stays removed); on failure (e.g. no network yet at cold boot) it
      * stays unseeded and is retried on the next app start.
      */
-    suspend fun seedDefaultRepositoryIfNeeded() {
-        if (dataStore.isDefaultRepositorySeeded()) return
-        val results = DEFAULT_REPOSITORY_URLS.map { url -> addRepository(url) }
-        if (results.all { it.isSuccess }) {
-            dataStore.markDefaultRepositorySeeded()
-        } else {
-            results.forEachIndexed { index, result ->
-                result.exceptionOrNull()?.let {
-                    Log.w(TAG, "seedDefaultRepositoryIfNeeded: failed for ${DEFAULT_REPOSITORY_URLS[index]}, will retry next launch", it)
-                }
+    suspend fun seedDefaultRepositoryIfNeeded() = reconcileMutex.withLock {
+        // Shares the reconcile lock so a startup remote sync can't run in the middle of
+        // seeding and drop a repo that was just added.
+        // Orphans mean the stored repo list was damaged, not that the user removed a default
+        // repo on purpose - so re-add any missing default repo even if it was seeded before.
+        val hadOrphans = removeOrphanScrapers()
+        val seededUrls = if (hadOrphans) emptySet() else dataStore.getSeededDefaultRepositoryUrls()
+        DEFAULT_REPOSITORY_URLS.filter { it !in seededUrls }.forEach { url ->
+            val result = addRepository(url)
+            val repo = result.getOrNull()
+            if (repo == null) {
+                Log.w(TAG, "seedDefaultRepositoryIfNeeded: failed for $url, will retry next launch", result.exceptionOrNull())
+                return@forEach
             }
+            val installedCount = dataStore.scrapers.first().count { it.repositoryId == repo.id }
+            if (installedCount == 0 && repo.scraperCount > 0) {
+                // Manifest loaded but no provider code downloaded: drop the empty repo so the
+                // next launch retries instead of leaving it marked seeded with nothing in it.
+                Log.w(TAG, "seedDefaultRepositoryIfNeeded: no scrapers installed for $url, will retry next launch")
+                removeRepository(repo.id)
+                return@forEach
+            }
+            dataStore.markDefaultRepositoryUrlSeeded(url)
         }
     }
 
@@ -333,9 +346,32 @@ class PluginManager @Inject constructor(
      * seeded-once flag, so it stays a no-op once the swap has happened and still
      * catches profiles that were seeded before this migration existed.
      */
-    suspend fun migrateLegacyLatinoRepositoryIfNeeded() {
+    /**
+     * Drops scrapers whose repository no longer exists. Older builds could leave these behind
+     * (a scraper list saved from a snapshot taken before its repo was removed): they still
+     * show up and can be toggled, but their code is gone, so they silently return nothing.
+     * If their repo is a default one, seeding re-adds it with working scrapers right after.
+     */
+    private suspend fun removeOrphanScrapers(): Boolean {
+        val repoIds = dataStore.repositories.first().map { it.id }.toSet()
+        val scrapers = dataStore.scrapers.first()
+        val orphans = scrapers.filter { it.repositoryId !in repoIds }
+        if (orphans.isEmpty()) return false
+        Log.w(TAG, "Removing ${orphans.size} orphaned scrapers: ${orphans.joinToString { it.name }}")
+        orphans.forEach { scraper ->
+            if (scraper.type == RepositoryType.EXTERNAL_DEX) {
+                externalExtensionLoader.deleteExtension(scraper.id)
+            } else {
+                dataStore.deleteScraperCode(scraper.id)
+            }
+        }
+        dataStore.saveScrapers(scrapers.filter { it.repositoryId in repoIds })
+        return true
+    }
+
+    suspend fun migrateLegacyLatinoRepositoryIfNeeded() = reconcileMutex.withLock {
         val legacyRepo = dataStore.repositories.first().find { it.url == LEGACY_LATINO_REPOSITORY_URL }
-            ?: return
+            ?: return@withLock
         Log.d(TAG, "Migrating legacy Latino repository to $LATINO_REPOSITORY_URL")
         // Add the new repo first and only remove the old one once that succeeds - if this
         // ran with no network yet (e.g. cold boot), removing first would silently drop the
@@ -567,9 +603,13 @@ class PluginManager @Inject constructor(
             removeMissingLocal
         }
 
+        // The built-in default repos are kept even when the account's remote list predates
+        // them; the deferred push after this sync then adds them to the remote list.
+        val defaultUrlSet = DEFAULT_REPOSITORY_URLS.map { normalizeUrl(it) }.toSet()
+
         if (shouldRemoveMissingLocal) {
             initialLocalRepos
-                .filter { normalizeUrl(it.url) !in remoteUrlSet }
+                .filter { normalizeUrl(it.url) !in remoteUrlSet && normalizeUrl(it.url) !in defaultUrlSet }
                 .forEach { repo ->
                     Log.d(TAG, "reconcile: removing local repo not in remote: ${repo.name} (${repo.url})")
                     removeRepository(repo.id)
@@ -595,7 +635,10 @@ class PluginManager @Inject constructor(
         val extras = currentRepos
             .filter { normalizeUrl(it.url) !in remoteUrlSet }
 
-        val reordered = if (shouldRemoveMissingLocal) remoteOrderedRepos else remoteOrderedRepos + extras
+        // Repos missing from the remote list were already removed above (with their
+        // scrapers). Any extras left were added while this sync ran - keep them: dropping
+        // them here only from the repo list would orphan their scrapers.
+        val reordered = remoteOrderedRepos + extras
         if (reordered.map { it.id } != currentRepos.map { it.id }) {
             dataStore.saveRepositories(reordered)
         }
@@ -881,12 +924,20 @@ class PluginManager @Inject constructor(
         tmdbId: String,
         mediaType: String,
         season: Int?,
-        episode: Int?
+        episode: Int?,
+        logSink: ((String) -> Unit)? = null
     ): List<LocalScraperResult> {
         return try {
-            val code = dataStore.getScraperCode(scraper.id)
+            var code = dataStore.getScraperCode(scraper.id)
+
+            // If no code found, attempt to download it from the repository
             if (code.isNullOrBlank()) {
-                Log.w(TAG, "No code found for scraper: ${scraper.name}")
+                Log.w(TAG, "No code found for scraper: ${scraper.name}, attempting download")
+                code = downloadMissingScraperCode(scraper) ?: return emptyList()
+            }
+
+            if (code.isNullOrBlank()) {
+                Log.w(TAG, "Still no code found for scraper after download attempt: ${scraper.name}")
                 return emptyList()
             }
 
@@ -918,13 +969,15 @@ class PluginManager @Inject constructor(
                         season = season,
                         episode = episode,
                         scraperId = scraper.id,
-                        scraperSettings = settings
+                        scraperSettings = settings,
+                        logSink = logSink
                     )
                 }
             }
 
             if (results == null) {
                 Log.w(TAG, "Scraper ${scraper.name} timed out after ${SCRAPER_TIMEOUT_MS}ms")
+                logSink?.invoke("Timed out after ${SCRAPER_TIMEOUT_MS / 1000}s")
                 return emptyList()
             }
 
@@ -933,6 +986,7 @@ class PluginManager @Inject constructor(
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to execute scraper ${scraper.name}: ${e.message}", e)
+            logSink?.invoke("Exception: ${e.javaClass.simpleName}: ${e.message}")
             emptyList()
         }
     }
@@ -965,7 +1019,45 @@ class PluginManager @Inject constructor(
             emptyList()
         }
     }
-    
+
+    /**
+     * Attempt to download missing scraper code from the repository.
+     * Returns the downloaded code if successful, null otherwise.
+     */
+    private suspend fun downloadMissingScraperCode(scraper: ScraperInfo): String? {
+        return try {
+            // Get repositories to find the one matching this scraper's repositoryId
+            val repositories = dataStore.repositories.first()
+            val repo = repositories.find { it.id == scraper.repositoryId }
+
+            if (repo == null) {
+                Log.w(TAG, "Repository not found for scraper ${scraper.name}: ${scraper.repositoryId}")
+                return null
+            }
+
+            // Construct the code URL using the same logic as downloadJsScrapers
+            val manifestUrl = repo.url
+            val baseUrl = manifestUrl.substringBeforeLast("/")
+            val codeUrl = if (scraper.filename.startsWith("http")) {
+                scraper.filename
+            } else {
+                "$baseUrl/${scraper.filename}"
+            }
+
+            Log.d(TAG, "Downloading missing code for ${scraper.name} from $codeUrl")
+
+            // Download with retry logic
+            fetchScraperCodeWithRetry(scraper.name, codeUrl)?.also { downloadedCode ->
+                // Save the downloaded code to dataStore
+                dataStore.saveScraperCode(scraper.id, downloadedCode)
+                Log.d(TAG, "Successfully downloaded and saved code for ${scraper.name}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error downloading missing scraper code for ${scraper.name}: ${e.message}", e)
+            null
+        }
+    }
+
     /**
      * Test a scraper with sample data, returning results along with diagnostic steps.
      */
@@ -1006,7 +1098,16 @@ class PluginManager @Inject constructor(
                 }
                 RepositoryType.NUVIO_JS -> {
                     diagnostics.addStep("Executing JS scraper...")
-                    executeScraper(scraper, testTmdbId, testMediaType, testSeason, testEpisode)
+                    // Capped so a chatty scraper can't flood the diagnostics panel.
+                    val logLines = java.util.concurrent.atomic.AtomicInteger()
+                    executeJsScraper(scraper, testTmdbId, testMediaType, testSeason, testEpisode) { line ->
+                        val n = logLines.incrementAndGet()
+                        if (n <= MAX_TEST_LOG_LINES) {
+                            diagnostics.addStep(line.take(300))
+                        } else if (n == MAX_TEST_LOG_LINES + 1) {
+                            diagnostics.addStep("... (further log lines omitted)")
+                        }
+                    }
                 }
             }
             diagnostics.addStep("Result: ${results.size} streams")
@@ -1088,8 +1189,9 @@ class PluginManager @Inject constructor(
         scraperInfos: List<ScraperManifestInfo>
     ) = withContext(Dispatchers.IO) {
         val baseUrl = manifestUrl.substringBeforeLast("/")
-        val existingScrapers = dataStore.scrapers.first().toMutableList()
-        
+        val existingScrapers = dataStore.scrapers.first()
+        val downloadedScrapers = mutableListOf<ScraperInfo>()
+
         scraperInfos.forEach { info ->
             try {
                 val codeUrl = if (info.filename.startsWith("http")) {
@@ -1139,18 +1241,22 @@ class PluginManager @Inject constructor(
                 // Save code
                 dataStore.saveScraperCode(scraperId, code)
                 
-                // Update scraper list
-                existingScrapers.removeAll { it.id == scraperId }
-                existingScrapers.add(scraper)
-                
+                downloadedScrapers.removeAll { it.id == scraperId }
+                downloadedScrapers.add(scraper)
+
                 Log.d(TAG, "Downloaded scraper: ${info.name}")
-                
+
             } catch (e: Exception) {
                 Log.e(TAG, "Error downloading scraper ${info.name}: ${e.message}", e)
             }
         }
-        
-        dataStore.saveScrapers(existingScrapers)
+
+        // Merge into the list as it is now, not as it was before the downloads started:
+        // another repo may have saved its scrapers meanwhile, and writing back the stale
+        // snapshot would silently wipe them.
+        val downloadedIds = downloadedScrapers.map { it.id }.toSet()
+        val latestScrapers = dataStore.scrapers.first().filter { it.id !in downloadedIds }
+        dataStore.saveScrapers(latestScrapers + downloadedScrapers)
     }
 
     /**

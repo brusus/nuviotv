@@ -644,6 +644,13 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         mpv.setOptionString("input-default-bindings", "yes")
         mpv.setOptionString("demuxer-max-bytes", "${64 * 1024 * 1024}")
         mpv.setOptionString("demuxer-max-back-bytes", "${64 * 1024 * 1024}")
+        // Let ffmpeg reopen a dropped HTTP connection itself instead of ending playback:
+        // reconnect_streamed covers live/non-seekable streams (IPTV), which otherwise
+        // stop at the first network hiccup. Unknown keys on older ffmpeg are ignored.
+        mpv.setOptionString(
+            "stream-lavf-o",
+            "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=10"
+        )
         mpv.setOptionString("keep-open", "yes")
         mpv.setOptionString("softvol", "yes")
         mpv.setOptionString("volume-max", MPV_MAX_VOLUME_PERCENT.toInt().toString())
@@ -687,8 +694,9 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
             mpv.setPropertyString("http-proxy", "")
             return
         }
+        val appContext = context.applicationContext
         val port = VpnBypassProxyServer.ensureStarted {
-            PlayerPlaybackNetworking.networkForVpnBypass(context, url)
+            PlayerPlaybackNetworking.networkForVpnBypass(appContext, url)
         }
         mpv.setPropertyString("http-proxy", if (port != null) "http://127.0.0.1:$port" else "")
     }

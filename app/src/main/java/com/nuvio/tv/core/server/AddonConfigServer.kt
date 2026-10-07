@@ -22,6 +22,10 @@ class AddonConfigServer(
 
     private val gson = Gson()
     private val pendingChanges = ConcurrentHashMap<String, PendingAddonChange>()
+    private val access = ConfigServerAccess()
+
+    /** URL for the QR code: the only way to obtain this server's access token. */
+    fun accessUrl(baseUrl: String): String = access.accessUrl(baseUrl)
 
     fun confirmChange(id: String) {
         pendingChanges[id]?.status = AddonChangeStatus.CONFIRMED
@@ -32,6 +36,11 @@ class AddonConfigServer(
     }
 
     override fun serve(session: IHTTPSession): Response {
+        access.rejectIfUnauthorized(session)?.let { return it }
+        return access.withSessionCookie(route(session))
+    }
+
+    private fun route(session: IHTTPSession): Response {
         val uri = session.uri
         val method = session.method
 

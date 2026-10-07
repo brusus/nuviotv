@@ -44,8 +44,10 @@ import javax.inject.Singleton
 
 private const val TAG = "PluginRuntime"
 private const val PLUGIN_TIMEOUT_MS = 60_000L
-private const val MAX_FETCH_RESPONSE_BYTES = 1024 * 1024
-private const val MAX_FETCH_BODY_CHARS = 1024 * 1024
+// Sized for the largest payload a shipped scraper needs in full: StreamingCommunity's title
+// sitemap is ~3.3MB, and cutting it at 1MB hid two thirds of that site's catalog.
+private const val MAX_FETCH_RESPONSE_BYTES = 6 * 1024 * 1024
+private const val MAX_FETCH_BODY_CHARS = 6 * 1024 * 1024
 @Singleton
 class PluginRuntime @Inject constructor(
     @ApplicationContext private val context: Context
@@ -131,7 +133,12 @@ class PluginRuntime @Inject constructor(
     }
 
     private val bypassVpnClient: OkHttpClient by lazy {
-        httpClient.newBuilder().socketFactory(bypassVpnSocketFactory).build()
+        // Own pool: OkHttp's connection reuse ignores the socket factory, so a shared pool
+        // could hand this client a connection that was opened through the VPN.
+        httpClient.newBuilder()
+            .socketFactory(bypassVpnSocketFactory)
+            .connectionPool(okhttp3.ConnectionPool())
+            .build()
     }
 
     /**
@@ -303,9 +310,10 @@ class PluginRuntime @Inject constructor(
         season: Int?,
         episode: Int?,
         scraperId: String,
-        scraperSettings: Map<String, Any> = emptyMap()
+        scraperSettings: Map<String, Any> = emptyMap(),
+        logSink: ((String) -> Unit)? = null
     ): List<LocalScraperResult> = withTimeout(PLUGIN_TIMEOUT_MS) {
-        executePluginInternal(code, tmdbId, mediaType, season, episode, scraperId, scraperSettings)
+        executePluginInternal(code, tmdbId, mediaType, season, episode, scraperId, scraperSettings, logSink)
     }
 
     private suspend fun executePluginInternal(
@@ -315,7 +323,10 @@ class PluginRuntime @Inject constructor(
         season: Int?,
         episode: Int?,
         scraperId: String,
-        scraperSettings: Map<String, Any>
+        scraperSettings: Map<String, Any>,
+        // Receives the plugin's console output and one line per HTTP request, so the
+        // plugin screen's Test can show why a scraper returned nothing.
+        logSink: ((String) -> Unit)?
     ): List<LocalScraperResult> {
         val documentCache = ConcurrentHashMap<String, Document>()
         val loadedDocIds = java.util.Collections.synchronizedList(mutableListOf<String>())
@@ -347,19 +358,27 @@ class PluginRuntime @Inject constructor(
                 // Define console object - must return null to avoid quickjs conversion issues
                 define("console") {
                         function("log") { args ->
-                            Log.d("Plugin:$scraperId", args.joinToString(" ") { it?.toString() ?: "null" })
+                            val line = args.joinToString(" ") { it?.toString() ?: "null" }
+                            Log.d("Plugin:$scraperId", line)
+                            logSink?.invoke(line)
                             null
                         }
                         function("error") { args ->
-                            Log.e("Plugin:$scraperId", args.joinToString(" ") { it?.toString() ?: "null" })
+                            val line = args.joinToString(" ") { it?.toString() ?: "null" }
+                            Log.e("Plugin:$scraperId", line)
+                            logSink?.invoke("ERROR: $line")
                             null
                         }
                         function("warn") { args ->
-                            Log.w("Plugin:$scraperId", args.joinToString(" ") { it?.toString() ?: "null" })
+                            val line = args.joinToString(" ") { it?.toString() ?: "null" }
+                            Log.w("Plugin:$scraperId", line)
+                            logSink?.invoke("WARN: $line")
                             null
                         }
                         function("info") { args ->
-                            Log.i("Plugin:$scraperId", args.joinToString(" ") { it?.toString() ?: "null" })
+                            val line = args.joinToString(" ") { it?.toString() ?: "null" }
+                            Log.i("Plugin:$scraperId", line)
+                            logSink?.invoke(line)
                             null
                         }
                         function("debug") { args ->
@@ -374,7 +393,7 @@ class PluginRuntime @Inject constructor(
                         val headersJson = args.getOrNull(2)?.toString() ?: "{}"
                         val body = args.getOrNull(3)?.toString() ?: ""
                         try {
-                            performNativeFetch(url, method, headersJson, body, inFlightCalls, scraperId)
+                            performNativeFetch(url, method, headersJson, body, inFlightCalls, scraperId, logSink)
                         } catch (t: Throwable) {
                             Log.e(TAG, "Async fetch bridge error for $method $url: ${t.message}")
                             gson.toJson(
@@ -594,7 +613,8 @@ class PluginRuntime @Inject constructor(
         headersJson: String,
         body: String,
         inFlightCalls: MutableSet<Call>,
-        scraperId: String
+        scraperId: String,
+        logSink: ((String) -> Unit)? = null
     ): String {
         if (BuildConfig.DEBUG) {
             Log.d(
@@ -654,7 +674,9 @@ class PluginRuntime @Inject constructor(
             }
 
             val request = requestBuilder.build()
-            val client = if (PluginSafety.shouldBypassVpn(scraperId)) {
+            // Per scraper (its whole traffic) or per destination host (e.g. MixDrop, whose
+            // signed media URLs must be resolved from the same IP the player will use).
+            val client = if (PluginSafety.shouldBypassVpn(scraperId) || PluginSafety.shouldBypassVpnForUrl(url)) {
                 getBypassVpnClientOrDefault()
             } else {
                 httpClient
@@ -707,6 +729,11 @@ class PluginRuntime @Inject constructor(
                         "truncated" to decodedRead.truncated
                     )
 
+                    logSink?.invoke(
+                        "HTTP ${httpResponse.code} $method ${com.nuvio.tv.core.network.LogSanitizer.redact(url).take(120)}" +
+                            " (${responseBody.length} chars${if (decodedRead.truncated) ", TRUNCATED" else ""})"
+                    )
+
                     if (BuildConfig.DEBUG) {
                         Log.d(
                             TAG,
@@ -723,6 +750,10 @@ class PluginRuntime @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Fetch error: ${e.message}")
+            logSink?.invoke(
+                "HTTP FAILED $method ${com.nuvio.tv.core.network.LogSanitizer.redact(url).take(120)}" +
+                    " - ${e.javaClass.simpleName}: ${e.message}"
+            )
             gson.toJson(mapOf(
                 "ok" to false,
                 "status" to 0,

@@ -21,6 +21,9 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
+/** Upper bound for a config POST body on the LAN config servers (settings JSON is a few KB). */
+internal const val MAX_CONFIG_BODY_BYTES = 1024 * 1024
+
 class StreamBadgeConfigServer(
     private val currentSettingsProvider: () -> StreamBadgeSettings,
     private val onSettingsChanged: (StreamBadgeSettings) -> Unit,
@@ -31,9 +34,13 @@ class StreamBadgeConfigServer(
     private val gson = Gson()
     private val settingsMapType = object : TypeToken<Map<String, Any?>>() {}.type
 
-    // sourceUrl is attacker-controlled: any device on the same network can POST to this
-    // on-demand, unauthenticated local server and ask it to fetch an arbitrary URL - see
-    // ssrfProtected().
+    private val access = ConfigServerAccess()
+
+    /** URL for the QR code: the only way to obtain this server's access token. */
+    fun accessUrl(baseUrl: String): String = access.accessUrl(baseUrl)
+
+    // sourceUrl is user-controlled: whoever holds the QR token can POST here and ask the
+    // server to fetch an arbitrary URL - see ssrfProtected().
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .ssrfProtected()
@@ -49,6 +56,11 @@ class StreamBadgeConfigServer(
     }
 
     override fun serve(session: IHTTPSession): Response {
+        access.rejectIfUnauthorized(session)?.let { return it }
+        return access.withSessionCookie(route(session))
+    }
+
+    private fun route(session: IHTTPSession): Response {
         return when {
             session.method == Method.GET && session.uri == "/" -> serveWebPage()
             session.method == Method.GET && session.uri == "/logo.png" -> serveLogo()
@@ -224,7 +236,9 @@ class StreamBadgeConfigServer(
 
     private fun readUtf8Body(session: IHTTPSession): String {
         val length = session.headers["content-length"]?.toIntOrNull() ?: return ""
-        if (length <= 0) return ""
+        // Bounded: a LAN client could send any Content-Length, and allocating it blindly
+        // throws OutOfMemoryError, which NanoHTTPD does not catch - crashing the app.
+        if (length <= 0 || length > MAX_CONFIG_BODY_BYTES) return ""
         val buffer = ByteArray(length)
         var offset = 0
         while (offset < length) {

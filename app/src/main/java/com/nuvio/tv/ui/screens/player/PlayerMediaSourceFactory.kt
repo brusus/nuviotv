@@ -80,7 +80,11 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
     // silently breaking every request bound to it afterwards.
     private fun resolvePlaybackHttpClient(url: String): OkHttpClient {
         val network = PlayerPlaybackNetworking.networkForVpnBypass(context, url) ?: return playbackHttpClient
-        return playbackHttpClient.newBuilder().socketFactory(network.socketFactory).build()
+        // Own pool, as connection reuse ignores the socket factory (see PluginRuntime).
+        return playbackHttpClient.newBuilder()
+            .socketFactory(network.socketFactory)
+            .connectionPool(okhttp3.ConnectionPool())
+            .build()
     }
 
     fun configureSubtitleParsing(
@@ -139,7 +143,12 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             }
             val okHttpFactory = OkHttpDataSource.Factory(resolvePlaybackHttpClient(url)).apply {
                 setDefaultRequestProperties(sanitizedHeaders)
-                setUserAgent(DEFAULT_USER_AGENT)
+                // Only when the stream brings no User-Agent of its own: OkHttpDataSource adds
+                // this as an extra header, and hosts like MixDrop sign the media URL for the
+                // exact User-Agent that resolved it - a different one gets 403.
+                if (sanitizedHeaders.none { it.key.equals("User-Agent", ignoreCase = true) }) {
+                    setUserAgent(DEFAULT_USER_AGENT)
+                }
             }
             ParallelRangeDataSource.Factory(
                 okHttpFactory,
@@ -497,7 +506,8 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
 
         suspend fun probeNetworkMimeType(
             url: String,
-            headers: Map<String, String> = emptyMap()
+            headers: Map<String, String> = emptyMap(),
+            appContextForProbe: android.content.Context? = null
         ): String? = withContext(Dispatchers.IO) {
             if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
                 return@withContext null
@@ -519,7 +529,10 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
                         requestBuilder.header("User-Agent", DEFAULT_USER_AGENT)
                     }
 
-                    PlayerPlaybackNetworking.playbackHttpClient.newCall(requestBuilder.build()).execute().use { response ->
+                    // Probe the way playback will connect: a bypass-eligible host probed
+                    // through the VPN gets 403 and pools a VPN-routed connection.
+                    PlayerPlaybackNetworking.createHttpClient(url = url, context = appContextForProbe)
+                        .newCall(requestBuilder.build()).execute().use { response ->
                         if (!response.isSuccessful && response.code !in 200..308) {
                             return@use null
                         }

@@ -69,6 +69,7 @@ data class ScraperManifestInfo(
 /**
  * Installed scraper info with runtime state
  */
+@JsonClass(generateAdapter = true)
 data class ScraperInfo(
     val id: String,
     val name: String,

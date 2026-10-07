@@ -77,6 +77,13 @@ data class PlayerUiState(
     val description: String? = null,
     val castMembers: List<MetaCastMember> = emptyList(),
     val showControls: Boolean = true,
+    /** IPTV channel started from a channel list: CH+/CH- switch to the neighbouring channel. */
+    val canZapChannels: Boolean = false,
+    /** In-player IPTV channel picker (opened with D-pad left); lists [iptvChannels]. */
+    val showChannelList: Boolean = false,
+    val iptvChannels: List<com.nuvio.tv.domain.model.IptvChannel> = emptyList(),
+    /** Channel banner shown for a few seconds after starting or switching an IPTV channel. */
+    val channelBanner: ChannelBannerInfo? = null,
     val showSeekOverlay: Boolean = false,
     val pendingPreviewSeekPosition: Long? = null,
     val playbackSpeed: Float = 1f,
@@ -288,6 +295,11 @@ sealed class PlayerEvent {
     data class OnSelectAddonSubtitle(val subtitle: Subtitle) : PlayerEvent()
     data class OnSetPlaybackSpeed(val speed: Float) : PlayerEvent()
     data object OnToggleControls : PlayerEvent()
+    /** Switch to the next (+1) or previous (-1) IPTV channel. */
+    data class OnZapChannel(val delta: Int) : PlayerEvent()
+    data object OnShowChannelList : PlayerEvent()
+    data object OnDismissChannelList : PlayerEvent()
+    data class OnSelectChannel(val streamUrl: String) : PlayerEvent()
     data object OnShowAudioOverlay : PlayerEvent()
     data object OnShowSubtitleOverlay : PlayerEvent()
     data object OnOpenSubtitleStylePanel : PlayerEvent()

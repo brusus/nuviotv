@@ -1,6 +1,7 @@
 package com.nuvio.tv.ui.screens.player
 
 import android.util.Log
+import androidx.media3.common.C
 import androidx.media3.exoplayer.SeekParameters
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import kotlinx.coroutines.CancellationException
@@ -19,10 +20,10 @@ private const val MPV_RESUME_SEEK_TOLERANCE_MS = 1500L
  * every tick of the 500ms progress-polling loop instead (see
  * PlayerRuntimeControllerPlaybackEvents.startProgressUpdates).
  */
-private const val MPV_STALL_NUDGE_THRESHOLD_MS = 15_000L
+internal const val MPV_STALL_NUDGE_THRESHOLD_MS = 15_000L
 
 /** Total stalled time (including the nudge attempt) before giving up on mpv and failing over. */
-private const val MPV_STALL_FAILOVER_THRESHOLD_MS = 35_000L
+internal const val MPV_STALL_FAILOVER_THRESHOLD_MS = 35_000L
 
 /**
  * Detects a wedged mpv session mid-playback (buffering with no position progress for a
@@ -76,6 +77,83 @@ internal fun PlayerRuntimeController.maybeHandleMpvMidPlaybackStall(
     }
 }
 
+/**
+ * ExoPlayer equivalent of [maybeHandleMpvMidPlaybackStall]. Called every 500ms from
+ * the progress update loop when using ExoPlayer. Detects when playback gets stuck
+ * in BUFFERING state and attempts recovery via re-seek, then failover to MPV if
+ * that doesn't help.
+ */
+internal fun PlayerRuntimeController.maybeHandleExoPlayerMidPlaybackStall(
+    bufferedPositionMs: Long,
+    isBufferingNow: Boolean,
+    isLive: Boolean
+) {
+    // Live streams don't have a meaningful "stuck position" the same way VOD does.
+    // Also reset if we're not buffering, haven't rendered first frame, or user paused.
+    if (!hasRenderedFirstFrame || isLive || userPausedManually || !isBufferingNow) {
+        exoStallDetectedAtMs = 0L
+        return
+    }
+
+    // If buffered position advanced or we're not yet tracking a stall, reset timer
+    if (exoStallDetectedAtMs == 0L || bufferedPositionMs > exoStallLastProgressBufferedPositionMs) {
+        exoStallDetectedAtMs = System.currentTimeMillis()
+        exoStallLastProgressBufferedPositionMs = bufferedPositionMs
+        exoStallNudgeAttempted = false
+        return
+    }
+
+    val stalledForMs = System.currentTimeMillis() - exoStallDetectedAtMs
+
+    // First intervention: attempt re-seek nudge after 15 seconds of being stuck
+    if (!exoStallNudgeAttempted && stalledForMs >= PlayerRuntimeController.STALL_WATCHDOG_THRESHOLD_MS) {
+        Log.w(
+            PlayerRuntimeController.TAG,
+            "EXO_STALL_WATCHDOG: stuck buffered at ${bufferedPositionMs}ms for ${stalledForMs}ms, " +
+                "nudging with a re-seek"
+        )
+        exoStallNudgeAttempted = true
+
+        // Use the stall watchdog policy to determine the seek target
+        val pos = _exoPlayer?.currentPosition ?: 0L
+        val duration = _exoPlayer?.duration ?: C.TIME_UNSET.coerceAtLeast(0L)
+
+        val decision = PlayerStallWatchdogPolicy.evaluate(
+            input = PlayerStallWatchdogPolicy.Input(
+                bufferedPositionMs = bufferedPositionMs,
+                playheadMs = pos,
+                durationMs = duration,
+                stalledForMs = stalledForMs
+            )
+        )
+
+        when (decision) {
+            is PlayerStallWatchdogPolicy.Decision.SeekPastBufferedEdge -> {
+                Log.w("PlayerViewModel", "EXO_STALL_WATCHDOG: seeking to ${decision.targetMs}ms to recover")
+                _exoPlayer?.seekTo(decision.targetMs)
+            }
+            else -> {
+                // Fallback: seek to current position if policy doesn't give us a target
+                _exoPlayer?.seekTo(pos)
+            }
+        }
+        return
+    }
+
+    // Second intervention: failover after 35 seconds total (including nudge attempt)
+    val exoStallFailoverThresholdMs = PlayerRuntimeController.STALL_WATCHDOG_THRESHOLD_MS + 20_000L
+    if (stalledForMs >= exoStallFailoverThresholdMs) {
+        Log.w(
+            "PlayerViewModel",
+            "EXO_STALL_WATCHDOG: still stuck after ${stalledForMs}ms and a nudge attempt, " +
+                "failing over to MPV"
+        )
+        exoStallDetectedAtMs = 0L
+        exoStallNudgeAttempted = false
+        switchInternalPlayerEngineManually()
+    }
+}
+
 internal fun PlayerRuntimeController.attachMpvView(view: NuvioMpvSurfaceView?) {
     if (mpvView === view) return
     mpvView = view
@@ -104,6 +182,7 @@ internal fun PlayerRuntimeController.attachMpvView(view: NuvioMpvSurfaceView?) {
         view.setAudioDelayMs(_uiState.value.audioDelayMs)
         view.applyAspectMode(_uiState.value.aspectMode)
         view.setPaused(false)
+        mpvCoreIdleStartedAtMs = 0L
         applyPendingMpvSeekIfNeeded(view)
         hasRenderedFirstFrame = false
         _uiState.update {
@@ -212,6 +291,7 @@ internal fun PlayerRuntimeController.initializeMpvPlayer(
         view.setAudioDelayMs(_uiState.value.audioDelayMs)
         view.applyAspectMode(_uiState.value.aspectMode)
         view.setPaused(false)
+        mpvCoreIdleStartedAtMs = 0L
         applyPendingMpvSeekIfNeeded(view)
 
         hasRenderedFirstFrame = false
@@ -656,6 +736,7 @@ internal fun PlayerRuntimeController.pauseForStillWatchingPrompt() {
 
 internal fun PlayerRuntimeController.keepMpvPlayingIfNeeded(wasPlaying: Boolean) {
     if (!wasPlaying || !isUsingMpvEngine()) return
+    mpvCoreIdleStartedAtMs = 0L
     scope.launch {
         // If track switch forces a pause, nudge playback back only when needed.
         repeat(6) {

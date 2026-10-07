@@ -39,14 +39,20 @@ object VpnBypassProxyServer {
      * CONNECT tunnel - never cache its result - since a Network object can go stale (Wi-Fi
      * reassociation, DHCP renewal, etc.) and a socket bound to a dead one fails outright.
      */
+    // Replaced on every ensureStarted(): the server outlives each player, so keeping the
+    // first caller's lambda would pin that player's Activity and its first stream URL.
+    @Volatile
+    private var currentNetworkProvider: () -> Network? = { null }
+
     @Synchronized
     fun ensureStarted(networkProvider: () -> Network?): Int? {
+        currentNetworkProvider = networkProvider
         serverSocket?.let { if (!it.isClosed) return boundPort }
         return try {
             val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
             serverSocket = server
             boundPort = server.localPort
-            executor.execute { acceptLoop(server, networkProvider) }
+            executor.execute { acceptLoop(server) { currentNetworkProvider() } }
             boundPort
         } catch (e: IOException) {
             Log.w(TAG, "Failed to start local VPN bypass proxy", e)
@@ -83,7 +89,7 @@ object VpnBypassProxyServer {
                 return
             }
             val hostPort = parts[1]
-            val host = hostPort.substringBeforeLast(':')
+            val host = hostPort.substringBeforeLast(':').removePrefix("[").removeSuffix("]")
             val port = hostPort.substringAfterLast(':').toIntOrNull() ?: 443
 
             val network = networkProvider()
@@ -94,6 +100,11 @@ object VpnBypassProxyServer {
             }
 
             client.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
+            // The timeout only guards the CONNECT handshake. Once relaying, mpv can stay silent
+            // far longer than that (buffer full, paused) while keeping the connection for its
+            // next segment request - a read timeout here would kill the client->upstream
+            // direction and leave those requests never forwarded.
+            client.soTimeout = 0
 
             val toUpstream = Thread { relay(client, upstream) }
             val toClient = Thread { relay(upstream, client) }
@@ -123,7 +134,11 @@ object VpnBypassProxyServer {
         } catch (e: IOException) {
             // Normal when either side closes the connection.
         } finally {
-            runCatching { to.shutdownOutput() }
+            // Close both sides, not just half-close: if the upstream died without a FIN
+            // (Wi-Fi drop), the opposite relay thread would otherwise block on read()
+            // forever, leaking its threads and sockets for the life of the process.
+            runCatching { from.close() }
+            runCatching { to.close() }
         }
     }
 

@@ -11,6 +11,8 @@ private const val TAG = "TestDiagnostics"
 data class TestDiagnostics(
     val steps: MutableList<String> = mutableListOf()
 ) {
+    // Synchronized: plugin console output and HTTP results arrive from the plugin's own threads.
+    @Synchronized
     fun addStep(step: String) {
         steps.add(step)
         Log.d(TAG, step)

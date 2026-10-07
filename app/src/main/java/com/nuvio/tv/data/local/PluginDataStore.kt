@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.domain.model.PluginRepository
 import com.nuvio.tv.domain.model.ScraperInfo
@@ -54,7 +55,7 @@ class PluginDataStore @Inject constructor(
     private val pluginsEnabledKey = booleanPreferencesKey("plugins_enabled")
     private val groupStreamsByRepositoryKey = booleanPreferencesKey("group_streams_by_repository")
     private val scraperSettingsKey = stringPreferencesKey("scraper_settings")
-    private val defaultRepositorySeededKey = booleanPreferencesKey("default_repository_seeded")
+    private val seededDefaultRepositoryUrlsKey = stringSetPreferencesKey("seeded_default_repository_urls")
 
     private val repoListType = Types.newParameterizedType(List::class.java, PluginRepository::class.java)
     private val scraperListType = Types.newParameterizedType(List::class.java, ScraperInfo::class.java)
@@ -176,13 +177,17 @@ class PluginDataStore @Inject constructor(
         }
     }
 
-    /** Whether the bundled default repository has already been auto-added for this profile. */
-    suspend fun isDefaultRepositorySeeded(): Boolean =
-        store().data.first()[defaultRepositorySeededKey] ?: false
+    /**
+     * Default repository URLs already auto-added for this profile. Tracked per URL (not a
+     * single flag) so a default repo that failed or was dropped during seeding is still
+     * added on a later launch, without re-adding one the user removed afterwards.
+     */
+    suspend fun getSeededDefaultRepositoryUrls(): Set<String> =
+        store().data.first()[seededDefaultRepositoryUrlsKey] ?: emptySet()
 
-    suspend fun markDefaultRepositorySeeded() {
+    suspend fun markDefaultRepositoryUrlSeeded(url: String) {
         store().edit { prefs ->
-            prefs[defaultRepositorySeededKey] = true
+            prefs[seededDefaultRepositoryUrlsKey] = (prefs[seededDefaultRepositoryUrlsKey] ?: emptySet()) + url
         }
     }
 

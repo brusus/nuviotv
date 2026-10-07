@@ -288,6 +288,27 @@ class WatchProgressPreferences @Inject constructor(
         }
     }
 
+    /**
+     * Applies [transform] to the entry currently stored under [progress]'s key, atomically
+     * under the storage lock. Does nothing if the entry no longer exists. For background
+     * enrichment (artwork, duration): writing back a copy taken before a slow network call
+     * would revert the position saved meanwhile, or resurrect an entry the user removed.
+     */
+    suspend fun updateExistingProgress(
+        progress: WatchProgress,
+        profileId: Int,
+        transform: (WatchProgress) -> WatchProgress
+    ) {
+        storageMutex.withLock {
+            ensureStorageLocked(profileId)
+            val current = readBucketsLocked(profileId)
+            val entries = mergeWatchProgressBuckets(current.recent, current.archive)
+            val existing = entries[createKey(progress)] ?: return
+            upsertProgressEntries(entries, listOf(transform(existing)))
+            writeBucketsLocked(profileId, current, splitWatchProgressEntries(entries))
+        }
+    }
+
     suspend fun saveProgressBatch(
         progressList: List<WatchProgress>,
         profileId: Int = profileManager.activeProfileId.value

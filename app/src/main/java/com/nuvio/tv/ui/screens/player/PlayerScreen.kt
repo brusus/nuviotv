@@ -277,6 +277,8 @@ fun PlayerScreen(
             dismissStreamInfoOverlay()
         } else if (uiState.showPauseOverlay) {
             viewModel.onEvent(PlayerEvent.OnDismissPauseOverlay)
+        } else if (uiState.showChannelList) {
+            viewModel.onEvent(PlayerEvent.OnDismissChannelList)
         } else if (uiState.showMoreDialog) {
             viewModel.onEvent(PlayerEvent.OnDismissMoreDialog)
         } else if (uiState.showSubtitleTimingDialog) {
@@ -704,6 +706,7 @@ fun PlayerScreen(
 
                 // When a side panel or dialog is open, let it handle all keys
                 val panelOrDialogOpen = uiState.showEpisodesPanel || uiState.showSourcesPanel ||
+                        uiState.showChannelList ||
                         uiState.showAudioOverlay || uiState.showSubtitleOverlay ||
                         uiState.showSubtitleStylePanel || uiState.showSpeedDialog ||
                         uiState.showSubtitleDelayOverlay || uiState.showSubtitleTimingDialog ||
@@ -717,7 +720,7 @@ fun PlayerScreen(
                     when (keyEvent.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_LEFT,
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            if (!uiState.showControls) {
+                            if (!uiState.showControls && !uiState.canZapChannels) {
                                 viewModel.onEvent(PlayerEvent.OnCommitPreviewSeek)
                                 return@onKeyEvent true
                             }
@@ -748,7 +751,12 @@ fun PlayerScreen(
                     }
                     when (keyEvent.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                            if (!uiState.showControls) {
+                            if (!uiState.showControls && uiState.canZapChannels) {
+                                // IPTV: up/down are taken by channel zapping, so OK is
+                                // what opens the controls (play/pause is in there).
+                                viewModel.onEvent(PlayerEvent.OnToggleControls)
+                                true
+                            } else if (!uiState.showControls) {
                                 viewModel.onEvent(PlayerEvent.OnPlayPause)
                                 true
                             } else {
@@ -760,7 +768,14 @@ fun PlayerScreen(
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             val overlayButtonsCoexist = skipButtonActuallyVisible &&
                                 uiState.postPlayMode is PostPlayMode.AutoPlay
-                            if (!uiState.showControls && !overlayButtonsCoexist) {
+                            if (!uiState.showControls && uiState.canZapChannels) {
+                                // IPTV: nothing to seek in a live channel - left opens the
+                                // channel list instead.
+                                if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                                    viewModel.onEvent(PlayerEvent.OnShowChannelList)
+                                }
+                                true
+                            } else if (!uiState.showControls && !overlayButtonsCoexist) {
                                 val isLeft =
                                     keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT
                                 val deltaMs = PlayerScrubRates.deltaMsForKeyRepeat(
@@ -775,8 +790,22 @@ fun PlayerScreen(
                                 false
                             }
                         }
+                        KeyEvent.KEYCODE_CHANNEL_UP,
+                        KeyEvent.KEYCODE_CHANNEL_DOWN -> {
+                            if (uiState.canZapChannels) {
+                                val delta = if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_CHANNEL_UP) 1 else -1
+                                viewModel.onEvent(PlayerEvent.OnZapChannel(delta))
+                                true
+                            } else {
+                                false
+                            }
+                        }
                         KeyEvent.KEYCODE_DPAD_UP -> {
-                                if (!uiState.showControls) {
+                                if (!uiState.showControls && uiState.canZapChannels) {
+                                    // IPTV: up/down zap channels like a TV remote; OK
+                                    // opens the controls instead.
+                                    viewModel.onEvent(PlayerEvent.OnZapChannel(1))
+                                } else if (!uiState.showControls) {
                                     viewModel.onEvent(PlayerEvent.OnToggleControls)
                                 } else {
                                     try {
@@ -801,7 +830,10 @@ fun PlayerScreen(
                                 true
                             }
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
-                            if (!uiState.showControls) {
+                            if (!uiState.showControls && uiState.canZapChannels) {
+                                viewModel.onEvent(PlayerEvent.OnZapChannel(-1))
+                                true
+                            } else if (!uiState.showControls) {
                                 viewModel.onEvent(PlayerEvent.OnToggleControls)
                                 true
                             } else {
@@ -1467,6 +1499,32 @@ fun PlayerScreen(
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
+        }
+
+        // IPTV channel banner (number, logo, now/next) after starting or zapping a channel
+        val channelBanner = uiState.channelBanner
+        AnimatedVisibility(
+            visible = channelBanner != null && !uiState.showControls && !uiState.showChannelList &&
+                uiState.error == null,
+            enter = fadeIn(animationSpec = tween(150)),
+            exit = fadeOut(animationSpec = tween(250)),
+            modifier = Modifier.align(Alignment.BottomStart)
+        ) {
+            channelBanner?.let { IptvChannelBanner(info = it) }
+        }
+
+        // IPTV channel list (slides in from left)
+        AnimatedVisibility(
+            visible = uiState.showChannelList && uiState.error == null,
+            enter = slideInHorizontally(animationSpec = tween(200), initialOffsetX = { -it }),
+            exit = slideOutHorizontally(animationSpec = tween(200), targetOffsetX = { -it })
+        ) {
+            IptvChannelListPanel(
+                channels = uiState.iptvChannels,
+                currentStreamUrl = uiState.currentStreamUrl,
+                onSelect = { url -> viewModel.onEvent(PlayerEvent.OnSelectChannel(url)) },
+                onClose = { viewModel.onEvent(PlayerEvent.OnDismissChannelList) }
+            )
         }
 
         // Sources panel scrim

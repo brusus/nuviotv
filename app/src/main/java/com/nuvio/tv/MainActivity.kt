@@ -948,6 +948,7 @@ open class MainActivity : ComponentActivity() {
                     val strNavIptv = stringResource(R.string.nav_iptv)
                     val strNavLibrary = stringResource(R.string.nav_library)
                     val strNavSettings = stringResource(R.string.nav_settings)
+                    val strNavPlugins = stringResource(R.string.nav_plugins)
                     val drawerItems = remember(
                         strNavHome,
                         strNavDiscover,
@@ -956,6 +957,7 @@ open class MainActivity : ComponentActivity() {
                         strNavIptv,
                         strNavLibrary,
                         strNavSettings,
+                        strNavPlugins,
                         discoverLocation,
                         liveTvSidebarEnabled
                     ) {
@@ -983,6 +985,15 @@ open class MainActivity : ComponentActivity() {
                                     iconRes = R.raw.sidebar_search
                                 )
                             )
+                            if (BuildConfig.FEATURE_PLUGINS_ENABLED) {
+                                add(
+                                    DrawerItem(
+                                        route = Screen.Plugins.route,
+                                        label = strNavPlugins,
+                                        iconRes = R.raw.sidebar_plugin
+                                    )
+                                )
+                            }
                             if (liveTvSidebarEnabled) {
                                 add(
                                     DrawerItem(

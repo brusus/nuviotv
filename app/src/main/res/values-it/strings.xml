@@ -1286,6 +1286,12 @@
 <string name="live_tv_error_unavailable">Impossibile avviare questo canale. Accedi con un account RaiPlay gratuito in Impostazioni ▸ Plugin ▸ RaiPlay, poi riprova</string>
 <string name="iptv_title">IPTV</string>
 <string name="iptv_subtitle">La tua playlist M3U</string>
+<string name="iptv_player_channel_list_title">Canali</string>
+<string name="iptv_source_personal">La mia lista</string>
+<string name="iptv_source_world">Mondo</string>
+<string name="iptv_country_picker_title">Scegli il paese</string>
+<string name="iptv_banner_now">Ora: %1$s</string>
+<string name="iptv_banner_next">A seguire: %1$s</string>
 <string name="iptv_error_not_configured">Nessuna playlist configurata. Aggiungi l\'URL della tua playlist M3U nelle impostazioni.</string>
 <string name="iptv_open_settings">Apri impostazioni</string>
 <string name="iptv_error_load_failed">Impossibile caricare la playlist. Controlla l\'URL e la connessione.</string>

@@ -65,6 +65,88 @@ internal fun PlayerRuntimeController.attemptStartupRecovery(
 }
 
 /**
+ * Keeps a live channel going after it has started. Startup recovery stops at the first
+ * frame and the parsing probe runs once per session, so before this a network blip or
+ * falling behind the live window (after a long pause or rebuffer) ended a live channel
+ * on an error screen - something a TV viewer expects to just reconnect.
+ *
+ * Behind the live window is fixed in place by jumping back to the live edge. Network-type
+ * failures rebuild the player with a growing delay; the attempt budget refills once the
+ * channel has played for a while, so a stream that drops every few hours keeps working
+ * while one that can never stay up still ends on the error screen.
+ */
+internal fun PlayerRuntimeController.tryLiveStreamRecovery(error: PlaybackException): Boolean {
+    val player = _exoPlayer ?: return false
+    val isLive = LivePlaybackUiPolicy.isLivePlayback(
+        playerReportsLive = player.isCurrentMediaItemLive,
+        contentType = contentType,
+        latchedLive = livePlaybackLatched
+    )
+    if (!isLive) return false
+
+    val behindLiveWindow = error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW
+    if (!behindLiveWindow) {
+        if (!hasRenderedFirstFrame) return false
+        if (!isLiveReconnectableError(error)) return false
+    }
+
+    // Both paths share one budget, so a stream whose live edge is itself unplayable ends
+    // on the error screen instead of cycling error -> prepare -> error.
+    val now = android.os.SystemClock.elapsedRealtime()
+    if (now - lastLiveReconnectAtMs > LIVE_RECONNECT_BUDGET_RESET_MS) liveReconnectAttempts = 0
+    if (liveReconnectAttempts >= MAX_LIVE_RECONNECT_ATTEMPTS) return false
+
+    val attempt = liveReconnectAttempts++
+    lastLiveReconnectAtMs = now
+
+    if (behindLiveWindow && attempt == 0) {
+        Log.w(PlayerRuntimeController.TAG, "Live: fell behind the live window, jumping back to the live edge")
+        player.seekToDefaultPosition()
+        player.prepare()
+        return true
+    }
+    val delayMs = (LIVE_RECONNECT_BASE_DELAY_MS shl attempt).coerceAtMost(LIVE_RECONNECT_MAX_DELAY_MS)
+    Log.w(
+        PlayerRuntimeController.TAG,
+        "Live: reconnect ${attempt + 1}/$MAX_LIVE_RECONNECT_ATTEMPTS in ${delayMs}ms after [${error.errorCode}] ${error.message}"
+    )
+
+    errorRetryJob?.cancel()
+    errorRetryJob = scope.launch {
+        showRecoveryOverlay()
+        delay(delayMs)
+        releasePlayer(flushPlaybackState = false)
+        // A live channel always resumes at the live edge, never at the old position.
+        initializePlayer(currentStreamUrl, currentHeaders, startPaused = false)
+    }
+    return true
+}
+
+private const val MAX_LIVE_RECONNECT_ATTEMPTS = 5
+private const val LIVE_RECONNECT_BASE_DELAY_MS = 1_000L
+private const val LIVE_RECONNECT_MAX_DELAY_MS = 15_000L
+private const val LIVE_RECONNECT_BUDGET_RESET_MS = 120_000L
+
+/** Network/stream glitches worth reconnecting a live channel for (not auth/decoder failures). */
+internal fun isLiveReconnectableError(error: PlaybackException): Boolean {
+    return when (error.errorCode) {
+        PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+        PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,
+        PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+        PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED -> true
+        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> {
+            // Live HLS servers briefly 404/5xx segments and playlists while rotating them;
+            // 401/403 mean the credentials or token are rejected and retrying won't help.
+            val code = error.findCauseOfType<HttpDataSource.InvalidResponseCodeException>()?.responseCode
+            code != 401 && code != 403
+        }
+        else -> false
+    }
+}
+
+/**
  * Determines whether the given [PlaybackException] is transient and worth retrying.
  *
  * Retryable errors include source/IO errors, parsing glitches, and unexpected runtime
@@ -307,6 +389,14 @@ internal fun PlayerRuntimeController.resetErrorRetryState() {
     errorRetryCount = 0
     parsingErrorProbeAttempted = false
     pendingAudioPcmFallbackRebuild = false
+    // One-shot recovery guards. Reset here (stable playback, stream switch, explicit
+    // restart) and NOT on every initializePlayer(): each retry rebuilds through
+    // initializePlayer, so resetting there re-armed them and let ladders loop forever.
+    timeoutRecoveryAttempts = 0
+    hasRetriedCurrentStreamAfterUnexpectedNpe = false
+    hasRetriedCurrentStreamAfterMediaPeriodHolderCrash = false
+    hasRetriedCurrentStreamAfter416 = false
+    hasTriedAudioPcmFallback = false
     errorRetryJob?.cancel()
     errorRetryJob = null
 }
@@ -464,7 +554,8 @@ internal fun PlayerRuntimeController.tryParsingErrorProbeFallback(
         showRecoveryOverlay()
         val probedMime = PlayerMediaSourceFactory.probeNetworkMimeType(
             url = currentStreamUrl,
-            headers = currentHeaders
+            headers = currentHeaders,
+            appContextForProbe = context.applicationContext
         )
 
         if (probedMime != null && probedMime != previousMimeType) {

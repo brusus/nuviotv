@@ -138,11 +138,36 @@ internal object PlayerPlaybackNetworking {
                 try {
                     chain.proceed(request)
                 } catch (e: SSLException) {
-                    // Fallback to trust-all client if standard system SSL fails (e.g. self-signed local server)
+                    // Fallback to trust-all only for servers on the local network (self-signed
+                    // Jellyfin/WebDAV at home). For public hosts a failed certificate check is
+                    // exactly what a network attacker produces: retrying without it would hand
+                    // them the request, Authorization header included.
+                    if (!isLocalNetworkHost(request.url.host)) throw e
                     trustAllPlaybackHttpClient.newCall(request).execute()
                 }
             }
             .build()
+    }
+
+    /**
+     * True for hosts that can only be on the user's own network: private/loopback/link-local
+     * IP literals and single-label or .local/.lan/.home names. Decided from the URL alone,
+     * never via DNS, which an attacker on the path could answer.
+     */
+    internal fun isLocalNetworkHost(host: String): Boolean {
+        val h = host.lowercase().removePrefix("[").removeSuffix("]")
+        if (h == "localhost" || !h.contains('.') && !h.contains(':')) return true
+        if (h.endsWith(".local") || h.endsWith(".lan") || h.endsWith(".home") || h.endsWith(".home.arpa")) return true
+        val octets = h.split('.').mapNotNull { it.toIntOrNull() }
+        if (octets.size == 4 && h.count { it == '.' } == 3) {
+            val (a, b) = octets[0] to octets[1]
+            return a == 10 || a == 127 || (a == 172 && b in 16..31) ||
+                (a == 192 && b == 168) || (a == 169 && b == 254)
+        }
+        if (h.contains(':')) {
+            return h == "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80")
+        }
+        return false
     }
 
     fun createHttpClient(
@@ -151,11 +176,8 @@ internal object PlayerPlaybackNetworking {
         context: Context? = null
     ): OkHttpClient {
         val builder = playbackHttpClient.newBuilder()
-        if (context != null) {
-            networkForVpnBypass(context, url)?.let { network ->
-                builder.socketFactory(network.socketFactory)
-            }
-        }
+        val bypassNetwork = context?.let { networkForVpnBypass(it, url) }
+        bypassNetwork?.let { network -> builder.socketFactory(network.socketFactory) }
         if (defaultHeaders.any { it.key.equals("Authorization", ignoreCase = true) }) {
             // OkHttp strips the Authorization header on cross-host redirects.
             // WebDAV servers behind reverse proxies commonly redirect to a
@@ -178,9 +200,13 @@ internal object PlayerPlaybackNetworking {
                 }
             }
         }
-        return builder
-            .let { NuvioExoPlayerPerformanceHelper.applyNetworkOptimizations(it) }
-            .build()
+        val optimized = NuvioExoPlayerPerformanceHelper.applyNetworkOptimizations(builder)
+        // A VPN-bypass client needs its own pool, set AFTER the optimizations (which install
+        // the shared pool): OkHttp reuses pooled connections regardless of socket factory,
+        // so with the shared pool a bypass request rides a connection that was opened
+        // through the VPN - and vixsrc answers it with 403 in a few ms.
+        if (bypassNetwork != null) optimized.connectionPool(okhttp3.ConnectionPool())
+        return optimized.build()
     }
 
     @UnstableApi

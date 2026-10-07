@@ -138,7 +138,7 @@ class DebridSettingsViewModel @Inject constructor(
             _uiState.update { it.copy(serverError = context.getString(R.string.error_server_ports_unavailable)) }
             return
         }
-        val url = "http://$ip:${server.listeningPort}"
+        val url = server.accessUrl("http://$ip:${server.listeningPort}")
         _uiState.update {
             it.copy(
                 isFormatterQrModeActive = true,

@@ -27,6 +27,13 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -106,6 +113,35 @@ fun IptvScreen(
                 }
             }
 
+            // Source: the user's own playlist, or iptv-org's free channels by country.
+            val worldCountry = uiState.worldCountries.firstOrNull { it.code == uiState.worldCountryCode }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = NuvioTheme.spacing.xl)
+                    .padding(bottom = NuvioTheme.spacing.sm)
+            ) {
+                GroupChip(
+                    label = stringResource(R.string.iptv_source_personal),
+                    selected = !uiState.worldSource,
+                    onClick = { viewModel.selectWorldSource(false) }
+                )
+                GroupChip(
+                    label = buildString {
+                        append("🌍 ")
+                        append(stringResource(R.string.iptv_source_world))
+                        if (uiState.worldSource) {
+                            append(" · ")
+                            append(worldCountry?.let { "${it.flag} ${it.name}" } ?: uiState.worldCountryCode.uppercase())
+                            append(" ▾")
+                        }
+                    },
+                    selected = uiState.worldSource,
+                    onClick = { viewModel.selectWorldSource(true) }
+                )
+            }
+
             when {
                 uiState.error == IptvError.NOT_CONFIGURED -> {
                     IptvMessage(
@@ -134,28 +170,67 @@ fun IptvScreen(
                             onSelect = viewModel::selectGroup
                         )
                     }
+                    val visibleChannels = uiState.visibleChannels
+                    val gridState = rememberLazyGridState()
+                    val lastChannelFocus = remember { FocusRequester() }
+                    val lastChannelIndex = remember(visibleChannels, uiState.lastChannelUrl) {
+                        visibleChannels.indexOfFirst { it.streamUrl == uiState.lastChannelUrl }
+                    }
+                    // Reopen on the last channel watched (also after zapping in the player):
+                    // scroll it into view first - a grid item must be composed to take focus.
+                    LaunchedEffect(lastChannelIndex) {
+                        android.util.Log.d("IptvScreen", "Restore last channel: index=$lastChannelIndex of ${visibleChannels.size}")
+                        if (lastChannelIndex >= 0) {
+                            gridState.scrollToItem(lastChannelIndex)
+                            withFrameNanos { }
+                            runCatching { lastChannelFocus.requestFocus() }
+                        }
+                    }
                     LazyVerticalGrid(
+                        state = gridState,
+                        // Entering the grid from the sidebar (D-pad right) or coming back to
+                        // it lands on the last channel watched instead of the first tile.
+                        modifier = if (lastChannelIndex >= 0) {
+                            Modifier.fillMaxSize().focusRestorer(lastChannelFocus)
+                        } else {
+                            Modifier.fillMaxSize()
+                        },
                         columns = GridCells.Adaptive(minSize = 180.dp),
                         contentPadding = PaddingValues(
                             horizontal = NuvioTheme.spacing.xl,
                             vertical = NuvioTheme.spacing.lg
                         ),
                         horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md),
-                        verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md),
-                        modifier = Modifier.fillMaxSize()
+                        verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
                     ) {
-                        items(uiState.visibleChannels, key = { it.id + it.streamUrl }) { channel ->
+                        // Index in the key: a playlist can list the same channel twice, and
+                        // duplicate keys crash the grid.
+                        itemsIndexed(visibleChannels, key = { index, channel -> "$index|${channel.id}|${channel.streamUrl}" }) { index, channel ->
                             IptvChannelTile(
                                 channel = channel,
                                 nowPlaying = viewModel.nowPlayingTitle(channel),
                                 onClick = { viewModel.playChannel(channel) },
-                                onLongClick = { guideChannel = channel }
+                                onLongClick = { guideChannel = channel },
+                                modifier = if (index == lastChannelIndex) {
+                                    Modifier.focusRequester(lastChannelFocus)
+                                } else {
+                                    Modifier
+                                }
                             )
                         }
                     }
                 }
             }
         }
+    }
+
+    if (uiState.showCountryPicker && uiState.worldCountries.isNotEmpty()) {
+        IptvCountryPickerDialog(
+            countries = uiState.worldCountries,
+            selectedCode = uiState.worldCountryCode,
+            onSelect = viewModel::selectCountry,
+            onDismiss = viewModel::dismissCountryPicker
+        )
     }
 
     val currentGuideChannel = guideChannel
@@ -243,7 +318,8 @@ private fun IptvChannelTile(
     channel: IptvChannel,
     nowPlaying: String?,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val interactionSource = remember { MutableInteractionSource() }
@@ -260,7 +336,7 @@ private fun IptvChannelTile(
     )
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
             .graphicsLayer { scaleX = scale; scaleY = scale }

@@ -349,6 +349,12 @@ class PlayerRuntimeController(
     internal var mpvStallDetectedAtMs: Long = 0L
     internal var mpvStallLastProgressPositionMs: Long = -1L
     internal var mpvStallNudgeAttempted: Boolean = false
+    /** Mid-playback ExoPlayer stall tracking. 0L = not currently stalled. */
+    internal var exoStallDetectedAtMs: Long = 0L
+    internal var exoStallLastProgressBufferedPositionMs: Long = -1L
+    internal var exoStallNudgeAttempted: Boolean = false
+    /** When MPV enters core-idle state mid-playback, tracks when it started (0L = not idle). */
+    internal var mpvCoreIdleStartedAtMs: Long = 0L
     internal var hideControlsJob: Job? = null
     internal var hideSeekOverlayJob: Job? = null
     internal var watchProgressSaveJob: Job? = null
@@ -544,6 +550,11 @@ class PlayerRuntimeController(
     internal var hasTriedDv7HevcFallback: Boolean = false
     internal var forceDv7ToHevc: Boolean = false
     internal var startupRetryCount: Int = 0
+    internal var liveReconnectAttempts: Int = 0
+    internal var lastChannelZapAtMs: Long = 0L
+    internal var channelBannerJob: Job? = null
+    internal var lastChannelBannerStreamUrl: String? = null
+    internal var lastLiveReconnectAtMs: Long = 0L
     internal var parsingErrorProbeAttempted: Boolean = false
     internal var hasRetriedCurrentStreamAfterUnexpectedNpe: Boolean = false
     internal var hasRetriedCurrentStreamAfterMediaPeriodHolderCrash: Boolean = false
