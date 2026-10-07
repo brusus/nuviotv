@@ -2350,6 +2350,7 @@
     <string name="iptv_title">IPTV</string>
     <string name="iptv_subtitle">Your own M3U playlist</string>
     <string name="iptv_player_channel_list_title">Channels</string>
+    <string name="cf_challenge_title">Security check for %1$s. If a checkbox appears, select it with the remote.</string>
     <string name="iptv_source_personal">My playlist</string>
     <string name="iptv_source_world">World</string>
     <string name="iptv_country_picker_title">Choose a country</string>

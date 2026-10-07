@@ -41,6 +41,8 @@ jobs:
       RELEASE_KEY_ALIAS: ${{ secrets.NUVIO_RELEASE_KEY_ALIAS }}
       RELEASE_KEY_PASSWORD: ${{ secrets.NUVIO_RELEASE_KEY_PASSWORD }}
       RELEASE_STORE_PASSWORD: ${{ secrets.NUVIO_RELEASE_STORE_PASSWORD }}
+      # TMDB v3 key: without it every TMDB call 401s and local plugins get IMDb ids.
+      TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
 
     steps:
       - name: Check out full history
@@ -201,6 +203,7 @@ jobs:
           set_property NUVIO_RELEASE_KEY_ALIAS "${RELEASE_KEY_ALIAS}"
           set_property NUVIO_RELEASE_KEY_PASSWORD "${RELEASE_KEY_PASSWORD}"
           set_property NUVIO_RELEASE_STORE_PASSWORD "${RELEASE_STORE_PASSWORD}"
+          set_property TMDB_API_KEY "${TMDB_API_KEY}"
 
       - name: Verify release signing identity before compilation
         if: inputs.mode != 'dry-run'

@@ -1123,8 +1123,10 @@ class PluginManager @Inject constructor(
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "NuvioTV/1.0")
+                // Same as scraper code: a refresh must see the manifest as published now.
+                .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
                 .build()
-            
+
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.e(TAG, "Failed to fetch manifest: ${response.code}")
@@ -1159,9 +1161,12 @@ class PluginManager @Inject constructor(
                     return null
                 }
 
+                // Always revalidate: GitHub raw sends max-age=300, and a cached copy made a
+                // repository refresh right after a push silently reinstall the old code.
                 val codeRequest = Request.Builder()
                     .url(codeUrl)
                     .header("User-Agent", "NuvioTV/1.0")
+                    .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
                     .build()
                 val code = httpClient.newCall(codeRequest).execute().use { codeResponse ->
                     if (!codeResponse.isSuccessful) {

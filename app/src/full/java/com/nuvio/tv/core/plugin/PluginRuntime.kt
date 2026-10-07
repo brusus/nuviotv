@@ -86,6 +86,9 @@ class PluginRuntime @Inject constructor(
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     }
 
+    // Shared by all scrapers: a clearance earned for a host serves every later request to it.
+    private val cfChallengeSolver by lazy { CloudflareChallengeSolver(context) }
+
     private fun isVpnActive(): Boolean = try {
         val activeNetwork = connectivityManager.activeNetwork
         activeNetwork != null &&
@@ -614,7 +617,8 @@ class PluginRuntime @Inject constructor(
         body: String,
         inFlightCalls: MutableSet<Call>,
         scraperId: String,
-        logSink: ((String) -> Unit)? = null
+        logSink: ((String) -> Unit)? = null,
+        allowChallengeSolve: Boolean = true
     ): String {
         if (BuildConfig.DEBUG) {
             Log.d(
@@ -651,6 +655,19 @@ class PluginRuntime @Inject constructor(
             // Default User-Agent
             if (!headers.containsKey("User-Agent")) {
                 headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+
+            // A Cloudflare clearance obtained for this host only works with the cookie AND
+            // the User-Agent of the WebView that earned it, so both replace the scraper's.
+            cfChallengeSolver.clearanceFor(url)?.let { clearance ->
+                headers["User-Agent"] = clearance.userAgent
+                val jarCookies = cfChallengeSolver.cookieHeaderFor(url) ?: clearance.cookieHeader
+                val existingCookie = headers["Cookie"]?.takeIf { it.isNotBlank() }
+                headers["Cookie"] = if (existingCookie != null) {
+                    "$existingCookie; $jarCookies"
+                } else {
+                    jarCookies
+                }
             }
 
             val requestBuilder = Request.Builder()
@@ -717,6 +734,7 @@ class PluginRuntime @Inject constructor(
                     // value in responseHeaders["set-cookie"] is lossy/ambiguous. Pass the
                     // individual values through separately for headers.getSetCookie().
                     val setCookieList = httpResponse.headers("Set-Cookie")
+                    cfChallengeSolver.storeResponseCookies(url, setCookieList)
 
                     val result = mapOf(
                         "ok" to httpResponse.isSuccessful,
@@ -729,9 +747,16 @@ class PluginRuntime @Inject constructor(
                         "truncated" to decodedRead.truncated
                     )
 
+                    // Short error bodies ({"error":"..."}) usually say why a request was refused.
+                    val errorDetail = if (httpResponse.code >= 400 && responseBody.length <= 300) {
+                        ": ${responseBody.trim().replace('\n', ' ')}"
+                    } else {
+                        ""
+                    }
                     logSink?.invoke(
                         "HTTP ${httpResponse.code} $method ${com.nuvio.tv.core.network.LogSanitizer.redact(url).take(120)}" +
-                            " (${responseBody.length} chars${if (decodedRead.truncated) ", TRUNCATED" else ""})"
+                            " (${responseBody.length} chars${if (decodedRead.truncated) ", TRUNCATED" else ""})" +
+                            errorDetail
                     )
 
                     if (BuildConfig.DEBUG) {
@@ -742,6 +767,24 @@ class PluginRuntime @Inject constructor(
                                 "bodyLen=${responseBody.length} " +
                                 "bodyPreview=${com.nuvio.tv.core.network.LogSanitizer.redact(responseBody.take(300))}"
                         )
+                    }
+
+                    // Cloudflare "Just a moment..." page instead of content: clear it in an
+                    // offscreen WebView and retry once with the clearance cookie + its UA.
+                    if (CloudflareChallengeSolver.isChallengeResponse(httpResponse.code, responseBody)) {
+                        // Challenged again although a clearance was sent: it expired.
+                        cfChallengeSolver.invalidate(url)
+                        if (allowChallengeSolve) {
+                            logSink?.invoke("Cloudflare challenge on ${CloudflareChallengeSolver.hostOf(url)}: solving in WebView...")
+                            if (cfChallengeSolver.solveBlocking(url) != null) {
+                                logSink?.invoke("Cloudflare challenge cleared, retrying request")
+                                return performNativeFetch(
+                                    url, method, headersJson, body, inFlightCalls, scraperId, logSink,
+                                    allowChallengeSolve = false
+                                )
+                            }
+                            logSink?.invoke("Cloudflare challenge not cleared (interactive check or timeout)")
+                        }
                     }
                     gson.toJson(result)
                 }
@@ -942,6 +985,35 @@ class PluginRuntime @Inject constructor(
                     this.signal.dispatchEvent({ type: 'abort' });
                 };
                 globalThis.AbortController = AbortController;
+            }
+            // AbortSignal.timeout / AbortSignal.any are widely used by scrapers written for
+            // Node/browsers (e.g. `fetch(url, { signal: AbortSignal.timeout(5000) })`); without
+            // them the call throws "not a function" before any request is made.
+            if (typeof globalThis.AbortSignal.timeout !== 'function') {
+                globalThis.AbortSignal.timeout = function(ms) {
+                    var controller = new globalThis.AbortController();
+                    if (typeof setTimeout === 'function') {
+                        setTimeout(function() {
+                            var err = new Error('The operation timed out.');
+                            err.name = 'TimeoutError';
+                            controller.abort(err);
+                        }, ms);
+                    }
+                    return controller.signal;
+                };
+            }
+            if (typeof globalThis.AbortSignal.any !== 'function') {
+                globalThis.AbortSignal.any = function(signals) {
+                    var controller = new globalThis.AbortController();
+                    (signals || []).forEach(function(s) {
+                        if (!s) return;
+                        if (s.aborted) { controller.abort(s.reason); return; }
+                        if (typeof s.addEventListener === 'function') {
+                            s.addEventListener('abort', function() { controller.abort(s.reason); });
+                        }
+                    });
+                    return controller.signal;
+                };
             }
 
             // setTimeout/setInterval polyfills - this sandbox has no event loop or

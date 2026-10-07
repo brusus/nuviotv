@@ -142,7 +142,13 @@ internal object PlayerPlaybackNetworking {
                     // Jellyfin/WebDAV at home). For public hosts a failed certificate check is
                     // exactly what a network attacker produces: retrying without it would hand
                     // them the request, Authorization header included.
-                    if (!isLocalNetworkHost(request.url.host)) throw e
+                    // Also allowed: bare-IP stream servers (common for scraped HLS, e.g.
+                    // https://94.131.217.176/.../master.m3u8) that can't hold a valid
+                    // certificate - but only for anonymous requests, so no credentials can
+                    // ever be handed to an impostor this way.
+                    val anonymousIpHost = isIpLiteralHost(request.url.host) &&
+                        request.header("Authorization") == null
+                    if (!isLocalNetworkHost(request.url.host) && !anonymousIpHost) throw e
                     trustAllPlaybackHttpClient.newCall(request).execute()
                 }
             }
@@ -154,6 +160,13 @@ internal object PlayerPlaybackNetworking {
      * IP literals and single-label or .local/.lan/.home names. Decided from the URL alone,
      * never via DNS, which an attacker on the path could answer.
      */
+    internal fun isIpLiteralHost(host: String): Boolean {
+        val h = host.removePrefix("[").removeSuffix("]")
+        if (h.contains(':')) return true // IPv6 literal
+        val parts = h.split('.')
+        return parts.size == 4 && parts.all { part -> part.toIntOrNull()?.let { it in 0..255 } == true }
+    }
+
     internal fun isLocalNetworkHost(host: String): Boolean {
         val h = host.lowercase().removePrefix("[").removeSuffix("]")
         if (h == "localhost" || !h.contains('.') && !h.contains(':')) return true
