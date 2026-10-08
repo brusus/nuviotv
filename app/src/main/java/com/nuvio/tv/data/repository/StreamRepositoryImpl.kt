@@ -525,14 +525,18 @@ class StreamRepositoryImpl @Inject constructor(
             addonName = addonName,
             addonLogo = null,
             description = buildDescription(this),
-            behaviorHints = headers?.let { headers ->
-                StreamBehaviorHints(
-                    notWebReady = null,
-                    bingeGroup = null,
-                    countryWhitelist = null,
-                    proxyHeaders = ProxyHeaders(request = headers, response = null)
-                )
-            },
+            behaviorHints = StreamBehaviorHints(
+                notWebReady = null,
+                bingeGroup = PluginBingeGroup.of(
+                    scraperId = scraper.id,
+                    quality = quality,
+                    language = language,
+                    name = baseName,
+                    title = baseTitle
+                ),
+                countryWhitelist = null,
+                proxyHeaders = headers?.let { ProxyHeaders(request = it, response = null) }
+            ),
             infoHash = infoHash,
             fileIdx = null,
             ytId = null,
