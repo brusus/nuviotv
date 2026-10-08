@@ -417,7 +417,12 @@ fun LibraryScreen(
 
             if (uiState.visibleItems.isEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    val selectedTypeLabel = uiState.selectedTypeTab?.let { localizedTypeLabel(it.key) }?.lowercase() ?: stringResource(R.string.library_type_items)
+                    // The "All" tab has no type of its own: "No all yet" reads wrong, so it
+                    // uses the generic noun like the no-tab case.
+                    val selectedTypeLabel = uiState.selectedTypeTab
+                        ?.takeIf { it.key != LibraryTypeTab.ALL_KEY }
+                        ?.let { localizedTypeLabel(it.key) }?.lowercase()
+                        ?: stringResource(R.string.library_type_items)
                     val title = when {
                         uiState.sourceMode == LibrarySourceMode.TRAKT && !uiState.isTrackingAuthenticated -> stringResource(R.string.library_empty_trakt_not_auth_title)
                         uiState.sourceMode == LibrarySourceMode.SIMKL && !uiState.isTrackingAuthenticated -> stringResource(R.string.library_empty_simkl_not_auth_title)

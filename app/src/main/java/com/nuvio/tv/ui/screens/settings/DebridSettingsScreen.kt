@@ -713,7 +713,15 @@ fun DebridSettingsContent(
             qrBitmap = uiState.formatterQrCodeBitmap,
             serverUrl = uiState.formatterServerUrl,
             instruction = stringResource(R.string.debrid_formatter_qr_instruction),
-            onClose = { viewModel.stopFormatterQrMode() }
+            onClose = { viewModel.stopFormatterQrMode() },
+            hasPendingChange = uiState.pendingFormatterSettings != null
+        )
+    }
+
+    if (uiState.pendingFormatterSettings != null) {
+        PhoneChangesConfirmationDialog(
+            onConfirm = { viewModel.confirmPendingFormatterChange() },
+            onReject = { viewModel.rejectPendingFormatterChange() }
         )
     }
 }

@@ -10,7 +10,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-private const val MAX_STARTUP_AUTO_RETRIES = 2
 private const val MAX_AUTO_RETRIES = 2
 private const val RETRY_DELAY_MS = 1_500L
 private const val STABLE_PROGRESS_RESET_DELAY_MS = 5_000L
@@ -25,43 +24,6 @@ internal fun PlayerRuntimeController.showRecoveryOverlay() {
             showPauseOverlay = false
         )
     }
-}
-
-internal fun PlayerRuntimeController.attemptStartupRecovery(
-    error: PlaybackException,
-    detailedError: String
-): Boolean {
-    if (hasRenderedFirstFrame) return false
-    if (!isRetryablePlaybackError(error)) return false
-    if (startupRetryCount >= MAX_STARTUP_AUTO_RETRIES) return false
-
-    val paused = userPausedManually
-    val attempt = startupRetryCount
-    startupRetryCount++
-
-    Log.w(
-        PlayerRuntimeController.TAG,
-        "Startup recovery ${attempt + 1}/$MAX_STARTUP_AUTO_RETRIES after ${RETRY_DELAY_MS}ms for: $detailedError"
-    )
-
-    errorRetryJob?.cancel()
-    errorRetryJob = scope.launch {
-        _uiState.update {
-            it.copy(
-                playbackError = null,
-                isBuffering = true,
-                showLoadingOverlay = it.loadingOverlayEnabled,
-                loadingMessage = context.getString(R.string.player_loading_buffering),
-                showPauseOverlay = false
-            )
-        }
-
-        delay(RETRY_DELAY_MS)
-
-        releasePlayer(flushPlaybackState = false)
-        initializePlayer(currentStreamUrl, currentHeaders, startPaused = paused)
-    }
-    return true
 }
 
 /**
@@ -474,53 +436,6 @@ internal fun PlayerRuntimeController.tryAudioTrackPcmFallback(
     return true
 }
 
-/**
- * DV7-to-HEVC decoder fallback for ERROR_CODE_DECODER_INIT_FAILED (4003).
- *
- * When decoderPriority == 1 (EXTENSION_RENDERER_MODE_ON) and the decoder
- * fails to initialise, this is often caused by Dolby Vision profile 7
- * content on devices without a DV decoder.  Enabling the DV7-to-HEVC
- * mapping allows the HEVC decoder to handle the stream instead.
- *
- * Unlike the PCM fallback this requires a full player rebuild because
- * the mapping is baked into the renderers factory at build time.
- * Tunneling state does not matter for this fallback.
- */
-@androidx.annotation.OptIn(UnstableApi::class)
-internal fun PlayerRuntimeController.tryDv7HevcFallback(
-    error: PlaybackException
-): Boolean {
-    if (error.errorCode != PlaybackException.ERROR_CODE_DECODER_INIT_FAILED) return false
-    if (hasTriedDv7HevcFallback) return false
-    if (cachedDecoderPriority != 1) return false
-    // Skip if DV7-to-HEVC is already active — nothing more we can do.
-    if (forceDv7ToHevc) return false
-
-    hasTriedDv7HevcFallback = true
-    forceDv7ToHevc = true
-
-    val paused = userPausedManually
-    val savedPosition = _exoPlayer?.currentPosition?.takeIf { it > 0L } ?: 0L
-
-    Log.d(
-        PlayerRuntimeController.TAG,
-        "Decoder init failed (4003) — retrying with DV7-to-HEVC mapping, position=${savedPosition}ms"
-    )
-
-    resetErrorRetryState()
-
-    // Show loading overlay with fallback info instead of error screen.
-    errorRetryJob = scope.launch {
-        showRecoveryOverlay()
-
-        releasePlayer(flushPlaybackState = false)
-        if (savedPosition > 0L) {
-            _uiState.update { it.copy(pendingSeekPosition = savedPosition) }
-        }
-        initializePlayer(currentStreamUrl, currentHeaders, startPaused = paused)
-    }
-    return true
-}
 
 internal fun PlayerRuntimeController.tryParsingErrorProbeFallback(
     error: PlaybackException,

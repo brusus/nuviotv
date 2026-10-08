@@ -25,8 +25,19 @@ object LogSanitizer {
     private val AUTH_SCHEME_REGEX =
         Regex("(?i)\\b(Bearer|Basic|Token)\\s+[^\\s\"']+")
 
+    // Stremio addons carry their configuration - debrid API keys included - as a URL *path*
+    // segment, e.g. ".../realdebrid=KEY|sort=quality/stream/movie/tt1.json" or a long
+    // base64/hex blob. Such a segment is recognised by containing '=' or '|' (raw or
+    // percent-encoded), or by being a long opaque token.
+    private val PATH_CONFIG_SEGMENT_REGEX =
+        Regex("(?i)(?<=[a-z0-9]/)(?:[^/?#\\s\"']*(?:=|\\||%3D|%7C)[^/?#\\s\"']*|[A-Za-z0-9_\\-+%]{32,})(?=/)")
+
     fun redact(text: String): String {
         if (text.isEmpty()) return text
+        return redactKeyValues(PATH_CONFIG_SEGMENT_REGEX.replace(text, "REDACTED"))
+    }
+
+    private fun redactKeyValues(text: String): String {
         return AUTH_SCHEME_REGEX.replace(
             JSON_FIELD_REGEX.replace(
                 QUERY_PARAM_REGEX.replace(text) { "${it.groupValues[1]}=REDACTED" }

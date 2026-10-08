@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -112,6 +113,34 @@ class VpnManager @Inject constructor(
         }
     }
 
+    /** Raw config the running tunnel was built from; see the profile-switch watcher below. */
+    @Volatile
+    private var appliedRawConfig: String? = null
+
+    init {
+        // The config is per profile but the tunnel is one per app: when the active profile
+        // (or its saved config) changes while connected, the tunnel must follow - otherwise
+        // it kept running on the previous profile's server until the next manual toggle.
+        scope.launch {
+            preferences.config.distinctUntilChanged().collect { rawConfig ->
+                if (_connectionState.value != VpnConnectionState.CONNECTED) return@collect
+                if (rawConfig == appliedRawConfig) return@collect
+                if (rawConfig.isBlank()) {
+                    // New profile has no VPN set up: drop the tunnel, leaving its
+                    // auto-connect preference alone (this is not a user "turn off").
+                    launchOperation {
+                        runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
+                        appliedRawConfig = null
+                        _connectionState.value = VpnConnectionState.DISCONNECTED
+                        ipCheckClient.connectionPool.evictAll()
+                    }
+                } else {
+                    connect()
+                }
+            }
+        }
+    }
+
     fun connect() {
         launchOperation {
             _errorMessage.value = null
@@ -127,6 +156,7 @@ class VpnManager @Inject constructor(
                 _errorMessage.value = "no_config"
                 return@launchOperation
             }
+            appliedRawConfig = rawConfig
             val scopedConfig = try {
                 buildScopedConfig(rawConfig)
             } catch (e: Exception) {

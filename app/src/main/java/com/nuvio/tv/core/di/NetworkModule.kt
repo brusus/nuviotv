@@ -43,6 +43,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import com.nuvio.tv.core.network.IPv4FirstDns
 import com.nuvio.tv.core.diagnostics.SentryNetworkBreadcrumbInterceptor
+import com.nuvio.tv.ui.screens.player.PlayerPlaybackNetworking
 import java.io.File
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -51,6 +52,7 @@ import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Named
 import javax.inject.Singleton
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLException
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
@@ -139,8 +141,10 @@ object NetworkModule {
     }
 
     /**
-     * Permissive client for addon-provided URLs, including self-hosted servers with self-signed
-     * certificates. Uses a separate cache from first-party traffic.
+     * Client for addon-provided URLs. Validates certificates normally and falls back to a
+     * trust-all client only for self-hosted servers with self-signed certificates (local-network
+     * hosts, or bare-IP hosts on anonymous requests). Uses a separate cache from first-party
+     * traffic.
      *
      * Do not use for first-party endpoints.
      */
@@ -159,10 +163,33 @@ object NetworkModule {
         val sslContext = SSLContext.getInstance("TLS").apply {
             init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
         }
+        // One Cache instance shared by both clients: two instances on the same directory corrupt it.
+        val addonCache = Cache(File(context.cacheDir, "addon_http_cache"), 50L * 1024 * 1024)
+        val trustAllClient by lazy {
+            okHttpClient.newBuilder()
+                .cache(addonCache)
+                .sslSocketFactory(sslContext.socketFactory, trustAllManager)
+                .hostnameVerifier { _, _ -> true }
+                .build()
+        }
         return okHttpClient.newBuilder()
-            .cache(Cache(File(context.cacheDir, "addon_http_cache"), 50L * 1024 * 1024))
-            .sslSocketFactory(sslContext.socketFactory, trustAllManager)
-            .hostnameVerifier { _, _ -> true }
+            .cache(addonCache)
+            .addInterceptor { chain ->
+                val request = chain.request()
+                try {
+                    chain.proceed(request)
+                } catch (e: SSLException) {
+                    // A failed certificate check on a public host is exactly what a network
+                    // attacker produces, so retry without validation only where a valid
+                    // certificate is impossible: local-network hosts, and bare-IP hosts when the
+                    // request carries no credentials that could be handed to an impostor.
+                    val host = request.url.host
+                    val anonymousIpHost = PlayerPlaybackNetworking.isIpLiteralHost(host) &&
+                        request.header("Authorization") == null
+                    if (!PlayerPlaybackNetworking.isLocalNetworkHost(host) && !anonymousIpHost) throw e
+                    trustAllClient.newCall(request).execute()
+                }
+            }
             .build()
     }
 

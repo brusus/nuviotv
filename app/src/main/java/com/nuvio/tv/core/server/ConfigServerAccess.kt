@@ -24,8 +24,9 @@ internal class ConfigServerAccess {
 
     /** A 403 response if [session] carries no valid token, or null when access is allowed. */
     fun rejectIfUnauthorized(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response? {
-        val fromQuery = session.parameters[QUERY_PARAM]?.firstOrNull()
-        val fromCookie = session.cookies.read(COOKIE_NAME)
+        // Null-safe: the session's maps/cookie handler are platform types and may be null.
+        val fromQuery = session.parameters?.get(QUERY_PARAM)?.firstOrNull()
+        val fromCookie = session.cookies?.read(COOKIE_NAME)
         if (matches(fromQuery) || matches(fromCookie)) return null
         return NanoHTTPD.newFixedLengthResponse(
             NanoHTTPD.Response.Status.FORBIDDEN,

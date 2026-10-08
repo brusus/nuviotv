@@ -269,9 +269,13 @@ data class PlayerSettings(
     val stripHdr10PlusSei: Boolean = false,
     val mpvHi10pGnextSoftwareFallbackEnabled: Boolean = false,
     val mpvHardwareDecodeMode: MpvHardwareDecodeMode = MpvHardwareDecodeMode.AUTO_SAFE,
+    // FAST by default: HIGH/MAXIMUM GPU scaling made playback stutter on low-end TVs.
+    val mpvImageQuality: MpvImageQuality = MpvImageQuality.FAST,
     // Display settings
     val frameRateMatchingMode: FrameRateMatchingMode = FrameRateMatchingMode.OFF,
     val resolutionMatchingEnabled: Boolean = false,
+    // ExoPlayer: keep adaptive streams (HLS/DASH) on the highest supported bitrate.
+    val forceHighestAdaptiveQuality: Boolean = false,
     // Stream selection settings
     val streamAutoPlayMode: StreamAutoPlayMode = StreamAutoPlayMode.MANUAL,
     val streamAutoPlaySource: StreamAutoPlaySource = StreamAutoPlaySource.ALL_SOURCES,
@@ -407,6 +411,10 @@ enum class MpvHardwareDecodeMode {
     LEGACY_DIRECT_COPY, AUTO_SAFE, HARDWARE_COPY, HARDWARE_DIRECT, DISABLED
 }
 
+enum class MpvImageQuality {
+    FAST, HIGH, MAXIMUM
+}
+
 enum class AutoSkipSegmentType(val storedValue: String) {
     INTRO("intro"),
     RECAP("recap"),
@@ -534,9 +542,11 @@ class PlayerSettingsDataStore @Inject constructor(
     private val mpvHi10pGnextSoftwareFallbackEnabledKey =
         booleanPreferencesKey("mpv_hi10p_gnext_software_fallback_enabled")
     private val mpvHardwareDecodeModeKey = stringPreferencesKey("mpv_hardware_decode_mode")
+    private val mpvImageQualityKey = stringPreferencesKey("mpv_image_quality")
     private val frameRateMatchingKey = booleanPreferencesKey("frame_rate_matching")
     private val frameRateMatchingModeKey = stringPreferencesKey("frame_rate_matching_mode")
     private val resolutionMatchingEnabledKey = booleanPreferencesKey("resolution_matching_enabled")
+    private val forceHighestAdaptiveQualityKey = booleanPreferencesKey("force_highest_adaptive_quality")
     private val streamAutoPlayModeKey = stringPreferencesKey("stream_auto_play_mode")
     private val streamAutoPlaySourceKey = stringPreferencesKey("stream_auto_play_source")
     private val streamAutoPlaySelectedAddonsKey = stringSetPreferencesKey("stream_auto_play_selected_addons")
@@ -888,10 +898,12 @@ class PlayerSettingsDataStore @Inject constructor(
                 mpvHi10pGnextSoftwareFallbackEnabled =
                     prefs[mpvHi10pGnextSoftwareFallbackEnabledKey] ?: false,
                 mpvHardwareDecodeMode = parseMpvHardwareDecodeMode(prefs[mpvHardwareDecodeModeKey]),
+                mpvImageQuality = parseMpvImageQuality(prefs[mpvImageQualityKey]),
                 frameRateMatchingMode = prefs[frameRateMatchingModeKey]?.let {
                     runCatching { FrameRateMatchingMode.valueOf(it) }.getOrNull()
                 } ?: if (prefs[frameRateMatchingKey] == true) FrameRateMatchingMode.START_STOP else FrameRateMatchingMode.OFF,
                 resolutionMatchingEnabled = prefs[resolutionMatchingEnabledKey] ?: false,
+                forceHighestAdaptiveQuality = prefs[forceHighestAdaptiveQualityKey] ?: false,
                 streamAutoPlayMode = prefs[streamAutoPlayModeKey]?.let {
                     runCatching { StreamAutoPlayMode.valueOf(it) }.getOrDefault(StreamAutoPlayMode.MANUAL)
                 } ?: StreamAutoPlayMode.MANUAL,
@@ -1234,6 +1246,12 @@ class PlayerSettingsDataStore @Inject constructor(
         }
     }
 
+    suspend fun setForceHighestAdaptiveQuality(enabled: Boolean) {
+        store().edit { prefs ->
+            prefs[forceHighestAdaptiveQualityKey] = enabled
+        }
+    }
+
     suspend fun setFrameRateMatching(enabled: Boolean) {
         setFrameRateMatchingMode(
             if (enabled) FrameRateMatchingMode.START_STOP else FrameRateMatchingMode.OFF
@@ -1401,6 +1419,9 @@ class PlayerSettingsDataStore @Inject constructor(
     private fun parseMpvHardwareDecodeMode(value: String?): MpvHardwareDecodeMode {
         return when (value) { "HARDWARE_COPY" -> MpvHardwareDecodeMode.HARDWARE_COPY; "HARDWARE_DIRECT" -> MpvHardwareDecodeMode.HARDWARE_DIRECT; "DISABLED" -> MpvHardwareDecodeMode.DISABLED; "LEGACY_DIRECT_COPY" -> MpvHardwareDecodeMode.LEGACY_DIRECT_COPY; else -> MpvHardwareDecodeMode.AUTO_SAFE }
     }
+    private fun parseMpvImageQuality(value: String?): MpvImageQuality {
+        return when (value) { "HIGH" -> MpvImageQuality.HIGH; "MAXIMUM" -> MpvImageQuality.MAXIMUM; else -> MpvImageQuality.FAST }
+    }
 
     private fun normalizeSelectableLanguageCode(language: String): String {
         val code = language.trim().lowercase()
@@ -1486,6 +1507,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setMpvHardwareDecodeMode(mode: MpvHardwareDecodeMode) {
         store().edit { prefs ->
             prefs[mpvHardwareDecodeModeKey] = mode.name
+        }
+    }
+
+    suspend fun setMpvImageQuality(quality: MpvImageQuality) {
+        store().edit { prefs ->
+            prefs[mpvImageQualityKey] = quality.name
         }
     }
 

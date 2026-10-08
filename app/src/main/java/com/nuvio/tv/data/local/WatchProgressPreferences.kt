@@ -465,6 +465,10 @@ class WatchProgressPreferences @Inject constructor(
     /**
      * Merges remote entries into local storage. Newer lastWatched wins per key.
      *
+     * @param lastSuccessfulPushMs Sync point used to decide which local entries the remote
+     *   has already seen. Must be read BEFORE the snapshot was fetched: a push finishing
+     *   mid-fetch advances it past entries the snapshot cannot contain, and those would
+     *   then be deleted as "removed remotely". Null disables the guard.
      * @param profileId Explicit profile to write to. Prevents race conditions
      *   when the active profile changes between pull and merge operations.
      */
@@ -509,10 +513,13 @@ class WatchProgressPreferences @Inject constructor(
                 when {
                     key in pendingDeleteKeys -> local.remove(key)
                     key in pendingUpsertKeys && existing != null -> preservedLocalItems = true
-                    existing != null &&
-                        lastSuccessfulPushMs != null &&
-                        remote.lastWatched <= existing.lastWatched -> {
-                        if (existing.lastWatched > remote.lastWatched && existing.lastWatched > lastSuccessfulPushMs) {
+                    // Unconditional: progress saved without a queued push (or pushed while
+                    // this snapshot was in flight) is not a pending upsert, so the timestamp
+                    // is the only thing protecting it from a stale snapshot.
+                    existing != null && remote.lastWatched <= existing.lastWatched -> {
+                        if (existing.lastWatched > remote.lastWatched &&
+                            (lastSuccessfulPushMs == null || existing.lastWatched > lastSuccessfulPushMs)
+                        ) {
                             preservedLocalItems = true
                         }
                     }
@@ -564,10 +571,10 @@ class WatchProgressPreferences @Inject constructor(
                 when {
                     key in pendingDeleteKeys -> local.remove(key)
                     key in pendingUpsertKeys && existing != null -> preservedLocalItems = true
-                    existing != null &&
-                        lastSuccessfulPushMs != null &&
-                        remote.lastWatched <= existing.lastWatched -> {
-                        if (existing.lastWatched > remote.lastWatched && existing.lastWatched > lastSuccessfulPushMs) {
+                    existing != null && remote.lastWatched <= existing.lastWatched -> {
+                        if (existing.lastWatched > remote.lastWatched &&
+                            (lastSuccessfulPushMs == null || existing.lastWatched > lastSuccessfulPushMs)
+                        ) {
                             preservedLocalItems = true
                         }
                     }

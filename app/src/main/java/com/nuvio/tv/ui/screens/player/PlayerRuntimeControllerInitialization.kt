@@ -192,9 +192,6 @@ internal fun PlayerRuntimeController.initializePlayer(
                 shouldEnforceAutoplayOnFirstReady = false
             }
             val applyPcmFallbackOnStartup = pendingAudioPcmFallbackRebuild
-            val applyDv7FallbackOnStartup = forceDv7ToHevc
-            hasTriedDv7HevcFallback = false
-            forceDv7ToHevc = false
             mpvDelayStartAfterAfrSwitch = false
             playerInitializationStartedAtMs = System.currentTimeMillis()
             // Reset per playback; only the ExoPlayer custom-buffer path sets a real value.
@@ -223,6 +220,7 @@ internal fun PlayerRuntimeController.initializePlayer(
             mpvHi10pGnextSoftwareFallbackEnabledSetting =
                 playerSettings.mpvHi10pGnextSoftwareFallbackEnabled
             mpvHardwareDecodeModeSetting = playerSettings.mpvHardwareDecodeMode
+            mpvImageQualitySetting = playerSettings.mpvImageQuality
             var effectiveInternalPlayerEngine = overrideInternalPlayerEngine ?: playerSettings.internalPlayerEngine
             if (effectiveInternalPlayerEngine == InternalPlayerEngine.AUTO) {
                 effectiveInternalPlayerEngine = resolveAutoInternalPlayerEngine()
@@ -702,6 +700,10 @@ internal fun PlayerRuntimeController.initializePlayer(
                             .setExceedRendererCapabilitiesIfNecessary(true)
                             .setForceHighestSupportedBitrate(true)
                     )
+                }
+                if (playerSettings.forceHighestAdaptiveQuality) {
+                    // User opted out of adaptive downswitching for HLS/DASH.
+                    setParameters(buildUponParameters().setForceHighestSupportedBitrate(true))
                 }
 
                 if (preferredAudioLanguages.isNotEmpty()) {

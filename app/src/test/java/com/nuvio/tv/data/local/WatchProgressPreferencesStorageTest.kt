@@ -406,6 +406,57 @@ class WatchProgressPreferencesStorageTest {
         assertFalse(harness.preferences.getAllRawEntries().containsKey("boundary"))
     }
 
+    @Test
+    fun `snapshot cannot overwrite newer local progress that is not a pending upsert`() = runTest {
+        val harness = harness(emptyMap())
+        val local = progress("item", lastWatched = 200L).copy(position = 9_000L)
+        harness.preferences.saveProgress(local)
+
+        val preserved = harness.preferences.mergeRemoteEntries(
+            remoteEntries = mapOf("item" to progress("item", lastWatched = 150L)),
+            lastSuccessfulPushMs = 100L
+        )
+
+        assertTrue(preserved)
+        val kept = harness.preferences.getAllRawEntries().getValue("item")
+        assertEquals(200L, kept.lastWatched)
+        assertEquals(9_000L, kept.position)
+    }
+
+    @Test
+    fun `newer local progress wins even without a sync point`() = runTest {
+        val harness = harness(emptyMap())
+        val local = progress("item", lastWatched = 200L).copy(position = 9_000L)
+        harness.preferences.saveProgress(local)
+
+        harness.preferences.mergeRemoteEntries(
+            remoteEntries = mapOf("item" to progress("item", lastWatched = 150L))
+        )
+        harness.preferences.applyRemoteChanges(
+            upserts = mapOf("item" to progress("item", lastWatched = 150L)),
+            deletes = emptyList()
+        )
+
+        val kept = harness.preferences.getAllRawEntries().getValue("item")
+        assertEquals(200L, kept.lastWatched)
+        assertEquals(9_000L, kept.position)
+    }
+
+    @Test
+    fun `newer remote progress still replaces local progress`() = runTest {
+        val harness = harness(emptyMap())
+        harness.preferences.saveProgress(progress("item", lastWatched = 200L))
+
+        harness.preferences.mergeRemoteEntries(
+            remoteEntries = mapOf("item" to progress("item", lastWatched = 300L).copy(position = 9_000L)),
+            lastSuccessfulPushMs = 250L
+        )
+
+        val merged = harness.preferences.getAllRawEntries().getValue("item")
+        assertEquals(300L, merged.lastWatched)
+        assertEquals(9_000L, merged.position)
+    }
+
     private fun harness(entries: Map<String, WatchProgress>): Harness {
         val metadata = TestPreferencesDataStore(preferences(entries = entries))
         val recent = TestPreferencesDataStore()

@@ -854,6 +854,13 @@
     <string name="audio_mpv_hwdec_hardware_direct_desc">Uses direct hardware decoding. Fastest path on compatible devices.</string>
     <string name="audio_mpv_hwdec_disabled">Disabled (no)</string>
     <string name="audio_mpv_hwdec_disabled_desc">Disables hardware decoding and uses software decoding only.</string>
+    <string name="video_force_highest_quality_title">Always use the highest quality</string>
+    <string name="video_force_highest_quality_sub">Adaptive streams (HLS/DASH) stay on the best available quality instead of dropping when the connection slows down. May cause buffering.</string>
+    <string name="audio_mpv_image_quality_title">Image quality (mpv)</string>
+    <string name="audio_mpv_image_quality_subtitle">Upscaling and sharpening when using the mpv engine. Higher levels use more GPU.</string>
+    <string name="audio_mpv_image_quality_fast">Fast</string>
+    <string name="audio_mpv_image_quality_high">High (spline + debanding)</string>
+    <string name="audio_mpv_image_quality_maximum">Maximum (sharp upscaling + sharpening)</string>
     <string name="audio_decoder_device_only_desc">Only use built-in hardware decoders. Most compatible but may not support all formats.</string>
     <string name="audio_decoder_prefer_device_desc">Use hardware decoders when available, fall back to FFmpeg. Recommended for most devices.</string>
     <string name="audio_decoder_prefer_app_desc">Use FFmpeg decoders when available. Better format support but higher CPU usage.</string>
@@ -1660,6 +1667,8 @@
     <string name="addon_confirm_no_changes">No visible changes detected</string>
     <string name="addon_confirm_reject">Reject</string>
     <string name="addon_confirm_confirm">Confirm</string>
+    <string name="phone_changes_confirm_title">Apply changes from phone?</string>
+    <string name="phone_changes_confirm_message">Settings were changed from a phone connected to this TV. Confirm to apply them, or reject to keep the current settings.</string>
     <string name="addon_refresh_action">Refresh Addons</string>
     <string name="addon_refresh_default_subtitle">Pull latest addon changes for current profile</string>
     <string name="addon_refresh_done_subtitle">Addons refreshed just now</string>
@@ -2350,7 +2359,13 @@
     <string name="iptv_title">IPTV</string>
     <string name="iptv_subtitle">Your own M3U playlist</string>
     <string name="iptv_player_channel_list_title">Channels</string>
-    <string name="cf_challenge_title">Security check for %1$s. If a checkbox appears, select it with the remote.</string>
+    <string name="nav_vpn_on">VPN on</string>
+    <string name="nav_vpn_off">VPN off</string>
+    <string name="nav_vpn_connecting">VPN starting…</string>
+    <string name="nav_vpn_error_no_config">No VPN configuration. Add one in Settings → Integrations → VPN.</string>
+    <string name="nav_vpn_error_permission">VPN permission denied.</string>
+    <string name="nav_vpn_error_generic">VPN connection failed.</string>
+    <string name="cf_challenge_title">Security check for %1$s. Move the pointer onto the checkbox with the arrows and press OK. Back to cancel.</string>
     <string name="iptv_source_personal">My playlist</string>
     <string name="iptv_source_world">World</string>
     <string name="iptv_country_picker_title">Choose a country</string>

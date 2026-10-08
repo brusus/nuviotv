@@ -1068,7 +1068,15 @@ fun LayoutSettingsContent(
                 serverUrl = streamBadgeUiState.serverUrl,
                 instruction = stringResource(R.string.stream_badge_qr_instruction),
                 onClose = viewModel::stopStreamBadgeQrMode,
+                hasPendingChange = streamBadgeUiState.pendingPhoneSettings != null,
                 qrSize = 168.dp
+            )
+        }
+
+        if (streamBadgeUiState.pendingPhoneSettings != null) {
+            PhoneChangesConfirmationDialog(
+                onConfirm = viewModel::confirmPendingStreamBadgeChange,
+                onReject = viewModel::rejectPendingStreamBadgeChange
             )
         }
     }

@@ -36,7 +36,7 @@ class DebridFormatterConfigServerTest {
             )
         )
 
-        val response = server.serve(FakePostSession(body))
+        val response = server.serveAuthorized(FakePostSession(body))
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
         assertEquals("🔥4K UHD ☁️", saved?.nameTemplate)
@@ -65,11 +65,20 @@ class DebridFormatterConfigServerTest {
             )
         )
 
-        val response = server.serve(FakePostSession(body))
+        val response = server.serveAuthorized(FakePostSession(body))
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
         assertEquals("", saved?.nameTemplate)
         assertEquals("", saved?.descriptionTemplate)
+    }
+
+    /** Like the phone that opened the QR link: the request carries the server's access token. */
+    private fun DebridFormatterConfigServer.serveAuthorized(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        val token = accessUrl("http://test").substringAfter("t=")
+        return serve(object : NanoHTTPD.IHTTPSession by session {
+            override fun getParameters(): Map<String, List<String>> =
+                session.parameters.orEmpty() + ("t" to listOf(token))
+        })
     }
 
     private class FakePostSession(

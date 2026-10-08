@@ -3,7 +3,13 @@ package com.nuvio.tv.core.plugin
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import android.graphics.drawable.GradientDrawable
+import android.os.SystemClock
 import android.view.Gravity
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.widget.FrameLayout
@@ -29,7 +35,9 @@ private const val INTERACTIVE_TIMEOUT_MS = 45_000L
 private const val REVEAL_AFTER_MS = 6_000L
 private const val COOKIE_POLL_INTERVAL_MS = 500L
 private const val FAILURE_BACKOFF_MS = 10 * 60_000L
-private const val CLEARANCE_TTL_MS = 25 * 60_000L
+// Cloudflare usually grants clearance for hours; a rejected one is detected (re-challenge)
+// and replaced anyway, so there is no point in asking the user again every half hour.
+private const val CLEARANCE_TTL_MS = 6 * 60 * 60_000L
 private const val RECHALLENGE_LOOP_WINDOW_MS = 30_000L
 
 /**
@@ -165,6 +173,11 @@ class CloudflareChallengeSolver(private val context: Context) {
         val container = activity?.findViewById<ViewGroup>(android.R.id.content)
         val webView = WebView(activity ?: context)
         val overlay = container?.let { buildOverlay(it.context, host, webView) }
+        // Whatever had D-pad focus before the overlay took it: handed back when it closes,
+        // otherwise focus dies with the removed pointer layer and the remote does nothing
+        // until Back is pressed.
+        var focusBeforeReveal: View? = null
+        var revealed = false
         try {
             cookieManager.setAcceptThirdPartyCookies(webView, true)
             webView.settings.apply {
@@ -173,14 +186,17 @@ class CloudflareChallengeSolver(private val context: Context) {
                 userAgentString = webViewUserAgent
             }
             webView.webViewClient = WebViewClient()
-            if (overlay != null) container.addView(overlay)
+            if (overlay != null) container.addView(overlay.root)
             webView.loadUrl(url)
 
             val startedAt = System.currentTimeMillis()
             val timeoutMs = if (overlay != null) INTERACTIVE_TIMEOUT_MS else SOLVE_TIMEOUT_MS
-            var revealed = false
             while (System.currentTimeMillis() - startedAt < timeoutMs) {
                 delay(COOKIE_POLL_INTERVAL_MS)
+                if (overlay != null && overlay.cursorLayer.cancelled) {
+                    Log.i(TAG, "Challenge for $host cancelled by the user")
+                    return@withContext null
+                }
                 val cookies = cookieManager.getCookie(url).orEmpty()
                 if (cookies.contains("cf_clearance=")) {
                     cookieManager.flush()
@@ -193,22 +209,32 @@ class CloudflareChallengeSolver(private val context: Context) {
                 if (overlay != null && !revealed && System.currentTimeMillis() - startedAt > REVEAL_AFTER_MS) {
                     revealed = true
                     Log.i(TAG, "Challenge for $host not passed automatically: showing it to the user")
-                    overlay.alpha = 1f
-                    overlay.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
-                    webView.requestFocus()
+                    focusBeforeReveal = activity?.currentFocus
+                    overlay.root.alpha = 1f
+                    overlay.root.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+                    overlay.cursorLayer.requestFocus()
                 }
             }
             null
         } finally {
-            if (overlay != null) container.removeView(overlay)
+            if (overlay != null) {
+                container.removeView(overlay.root)
+                if (revealed) {
+                    val restored = focusBeforeReveal?.takeIf { it.isAttachedToWindow }?.requestFocus() == true
+                    if (!restored) container.getChildAt(0)?.requestFocus()
+                }
+            }
             webView.stopLoading()
             webView.destroy()
         }
     }
 
+    private class OverlayViews(val root: FrameLayout, val cursorLayer: CursorLayer)
+
     /** Full-screen layer: invisible and unfocusable until revealed, then a dimmed card. */
-    private fun buildOverlay(context: Context, host: String, webView: WebView): FrameLayout {
+    private fun buildOverlay(context: Context, host: String, webView: WebView): OverlayViews {
         val density = context.resources.displayMetrics.density
+        val cursorLayer = CursorLayer(context, webView)
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(0xFF15161A.toInt())
@@ -219,9 +245,9 @@ class CloudflareChallengeSolver(private val context: Context) {
                 textSize = 18f
                 setPadding(0, 0, 0, (10 * density).toInt())
             })
-            addView(webView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(cursorLayer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
-        return FrameLayout(context).apply {
+        val root = FrameLayout(context).apply {
             setBackgroundColor(0xCC000000.toInt())
             alpha = 0f
             // Until revealed it must not steal D-pad focus from the screen underneath.
@@ -231,6 +257,114 @@ class CloudflareChallengeSolver(private val context: Context) {
                 (context.resources.displayMetrics.heightPixels * 0.75f).toInt(),
                 Gravity.CENTER
             ))
+        }
+        return OverlayViews(root, cursorLayer)
+    }
+
+    /**
+     * Holds the WebView plus an on-screen pointer driven by the remote, like TV browsers:
+     * D-pad moves it, OK taps where it points. The check box lives in a cross-origin iframe
+     * that D-pad focus navigation can't enter, so this is how a TV user ticks it - the tap
+     * is still the user's own action. Back cancels the check.
+     */
+    private class CursorLayer(context: Context, private val webView: WebView) : FrameLayout(context) {
+        private val density = context.resources.displayMetrics.density
+        private val cursorSize = (22 * density).toInt()
+        private val cursor = View(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x66FFFFFF)
+                setStroke((3 * density).toInt(), 0xFFE53935.toInt())
+            }
+        }
+
+        @Volatile
+        var cancelled = false
+            private set
+
+        init {
+            isFocusable = true
+            isFocusableInTouchMode = true
+            webView.isFocusable = false
+            addView(webView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+            addView(cursor, LayoutParams(cursorSize, cursorSize))
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            if (oldw == 0 && oldh == 0) placeCursor(w / 2f, h / 2f)
+        }
+
+        private fun placeCursor(x: Float, y: Float) {
+            cursor.x = x.coerceIn(0f, (width - 1).toFloat()) - cursorSize / 2f
+            cursor.y = y.coerceIn(0f, (height - 1).toFloat()) - cursorSize / 2f
+        }
+
+        private val cursorCenterX get() = cursor.x + cursorSize / 2f
+        private val cursorCenterY get() = cursor.y + cursorSize / 2f
+
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            val step = 14 * density * (1 + (event.repeatCount / 3).coerceAtMost(5))
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        val dx = when (event.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_LEFT -> -step
+                            KeyEvent.KEYCODE_DPAD_RIGHT -> step
+                            else -> 0f
+                        }
+                        val dy = when (event.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_UP -> -step
+                            KeyEvent.KEYCODE_DPAD_DOWN -> step
+                            else -> 0f
+                        }
+                        // At the top/bottom edge the pointer stays put and the page scrolls
+                        // instead, so content below the fold (the check box) is reachable.
+                        if (dx != 0f) {
+                            placeCursor(cursorCenterX + dx, cursorCenterY)
+                        } else {
+                            val targetY = cursorCenterY + dy
+                            val edge = cursorSize.toFloat()
+                            if ((dy > 0 && targetY > height - edge) || (dy < 0 && targetY < edge)) {
+                                scrollPage(dy)
+                            } else {
+                                placeCursor(cursorCenterX, targetY)
+                            }
+                        }
+                    }
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                    if (event.action == KeyEvent.ACTION_UP) tapAtCursor()
+                    return true
+                }
+                KeyEvent.KEYCODE_BACK -> {
+                    if (event.action == KeyEvent.ACTION_UP) cancelled = true
+                    return true
+                }
+            }
+            return super.dispatchKeyEvent(event)
+        }
+
+        private fun scrollPage(dy: Float) {
+            // Native scroll covers most pages; the JS one covers pages that scroll an inner
+            // document the WebView's own scroll position doesn't track.
+            webView.scrollBy(0, dy.toInt())
+            val cssPixels = (dy / density).toInt()
+            webView.evaluateJavascript("window.scrollBy(0, $cssPixels);", null)
+        }
+
+        private fun tapAtCursor() {
+            val x = cursorCenterX
+            val y = cursorCenterY
+            val downTime = SystemClock.uptimeMillis()
+            listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP).forEachIndexed { i, action ->
+                val event = MotionEvent.obtain(downTime, downTime + i * 50L, action, x, y, 0)
+                event.source = InputDevice.SOURCE_TOUCHSCREEN
+                webView.dispatchTouchEvent(event)
+                event.recycle()
+            }
         }
     }
 

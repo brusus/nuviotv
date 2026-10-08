@@ -681,7 +681,8 @@ private fun QrCodeOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.85f)),
+            // Near-opaque: at 0.85 the screen behind showed through the server URL text.
+            .background(Color.Black.copy(alpha = 0.96f)),
         contentAlignment = Alignment.Center
     ) {
         Column(

@@ -53,6 +53,8 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.VpnKeyOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -212,7 +214,13 @@ data class DrawerItem(
     val label: String,
     val iconRes: Int? = null,
     val icon: ImageVector? = null
-)
+) {
+    /** Sidebar entries that run an action instead of opening a screen (the VPN switch). */
+    val isAction: Boolean get() = route == VPN_TOGGLE_DRAWER_ROUTE
+}
+
+/** Pseudo-route of the sidebar's VPN on/off entry; never passed to the NavController. */
+internal const val VPN_TOGGLE_DRAWER_ROUTE = "action:vpn_toggle"
 
 private data class MainUiPrefs(
     val theme: AppTheme = AppTheme.WHITE,
@@ -542,7 +550,7 @@ open class MainActivity : ComponentActivity() {
                 addonRepository.getInstalledAddons()
             }.collectAsState(initial = null)
             val discoverLocation = mainUiPrefs.discoverLocation
-            val liveTvSidebarEnabled by layoutPreferenceDataStore.liveTvSidebarEnabled.collectAsState(initial = true)
+            val liveTvSidebarEnabled by layoutPreferenceDataStore.liveTvSidebarEnabled.collectAsState(initial = false)
             val vpnConnectionState by vpnManager.connectionState.collectAsState()
             val vpnPermissionRequest by vpnManager.permissionRequest.collectAsState()
             LaunchedEffect(vpnPermissionRequest) {
@@ -934,6 +942,11 @@ open class MainActivity : ComponentActivity() {
                             }
                             add(Screen.Iptv.route)
                             add(Screen.Library.route)
+                            // Plugins is a sidebar entry like the others: without this the
+                            // sidebar vanished on that screen and Back was the only way out.
+                            if (BuildConfig.FEATURE_PLUGINS_ENABLED) {
+                                add(Screen.Plugins.route)
+                            }
                             add(Screen.Settings.route)
                             if (discoverLocation == DiscoverLocation.IN_SIDEBAR) {
                                 add(Screen.Discover.route)
@@ -949,7 +962,19 @@ open class MainActivity : ComponentActivity() {
                     val strNavLibrary = stringResource(R.string.nav_library)
                     val strNavSettings = stringResource(R.string.nav_settings)
                     val strNavPlugins = stringResource(R.string.nav_plugins)
+                    val vpnOn = vpnConnectionState == com.nuvio.tv.domain.model.VpnConnectionState.CONNECTED
+                    val vpnConnecting = vpnConnectionState == com.nuvio.tv.domain.model.VpnConnectionState.CONNECTING
+                    val strNavVpn = stringResource(
+                        when {
+                            vpnOn -> R.string.nav_vpn_on
+                            vpnConnecting -> R.string.nav_vpn_connecting
+                            else -> R.string.nav_vpn_off
+                        }
+                    )
                     val drawerItems = remember(
+                        strNavVpn,
+                        vpnOn,
+                        vpnConnecting,
                         strNavHome,
                         strNavDiscover,
                         strNavSearch,
@@ -962,6 +987,21 @@ open class MainActivity : ComponentActivity() {
                         liveTvSidebarEnabled
                     ) {
                         buildList {
+                            // VPN switch, right under the status dot. Full flavor only: the
+                            // playstore build has no VPN.
+                            if (BuildConfig.FEATURE_PLUGINS_ENABLED) {
+                                add(
+                                    DrawerItem(
+                                        route = VPN_TOGGLE_DRAWER_ROUTE,
+                                        label = strNavVpn,
+                                        icon = if (vpnOn || vpnConnecting) {
+                                            androidx.compose.material.icons.Icons.Filled.VpnKey
+                                        } else {
+                                            androidx.compose.material.icons.Icons.Filled.VpnKeyOff
+                                        }
+                                    )
+                                )
+                            }
                             add(
                                 DrawerItem(
                                     route = Screen.Home.route,
@@ -985,15 +1025,6 @@ open class MainActivity : ComponentActivity() {
                                     iconRes = R.raw.sidebar_search
                                 )
                             )
-                            if (BuildConfig.FEATURE_PLUGINS_ENABLED) {
-                                add(
-                                    DrawerItem(
-                                        route = Screen.Plugins.route,
-                                        label = strNavPlugins,
-                                        iconRes = R.raw.sidebar_plugin
-                                    )
-                                )
-                            }
                             if (liveTvSidebarEnabled) {
                                 add(
                                     DrawerItem(
@@ -1007,7 +1038,7 @@ open class MainActivity : ComponentActivity() {
                                 DrawerItem(
                                     route = Screen.Iptv.route,
                                     label = strNavIptv,
-                                    icon = Icons.Default.PlaylistPlay
+                                    icon = Icons.Default.LiveTv
                                 )
                             )
                             add(
@@ -1017,6 +1048,15 @@ open class MainActivity : ComponentActivity() {
                                     iconRes = R.raw.sidebar_library
                                 )
                             )
+                            if (BuildConfig.FEATURE_PLUGINS_ENABLED) {
+                                add(
+                                    DrawerItem(
+                                        route = Screen.Plugins.route,
+                                        label = strNavPlugins,
+                                        iconRes = R.raw.sidebar_plugin
+                                    )
+                                )
+                            }
                             add(
                                 DrawerItem(
                                     route = Screen.Settings.route,
@@ -1029,7 +1069,43 @@ open class MainActivity : ComponentActivity() {
                     val selectedDrawerRoute = drawerItems.firstOrNull { item ->
                         currentRoute == item.route || currentRoute?.startsWith("${item.route}/") == true
                     }?.route
-                    val selectedDrawerItem = drawerItems.firstOrNull { it.route == selectedDrawerRoute } ?: drawerItems.first()
+                    val selectedDrawerItem = drawerItems.firstOrNull { it.route == selectedDrawerRoute }
+                        ?: drawerItems.first { !it.isAction }
+                    // The sidebar switch has no screen of its own to show an error on, so a
+                    // failed attempt started from it is explained with a toast.
+                    var vpnToggledFromSidebar by remember { mutableStateOf(false) }
+                    val vpnErrorMessage by vpnManager.errorMessage.collectAsState()
+                    val vpnToastContext = LocalContext.current
+                    LaunchedEffect(vpnConnectionState, vpnErrorMessage) {
+                        if (!vpnToggledFromSidebar) return@LaunchedEffect
+                        when (vpnConnectionState) {
+                            com.nuvio.tv.domain.model.VpnConnectionState.ERROR -> {
+                                vpnToggledFromSidebar = false
+                                val message = when (vpnErrorMessage) {
+                                    "no_config" -> R.string.nav_vpn_error_no_config
+                                    "permission_denied" -> R.string.nav_vpn_error_permission
+                                    else -> R.string.nav_vpn_error_generic
+                                }
+                                Toast.makeText(vpnToastContext, message, Toast.LENGTH_LONG).show()
+                            }
+                            com.nuvio.tv.domain.model.VpnConnectionState.CONNECTED,
+                            com.nuvio.tv.domain.model.VpnConnectionState.DISCONNECTED -> vpnToggledFromSidebar = false
+                            else -> Unit
+                        }
+                    }
+                    val onDrawerNavigate: (String) -> Unit = { route ->
+                        if (route == VPN_TOGGLE_DRAWER_ROUTE) {
+                            vpnToggledFromSidebar = true
+                            // Same switch as Settings > VPN: on unless it is off or failed.
+                            when (vpnManager.connectionState.value) {
+                                com.nuvio.tv.domain.model.VpnConnectionState.DISCONNECTED,
+                                com.nuvio.tv.domain.model.VpnConnectionState.ERROR -> vpnManager.connect()
+                                else -> vpnManager.disconnect()
+                            }
+                        } else {
+                            optimisticRoute = route
+                        }
+                    }
 
                     val confirmExitEnabled by profileManager.confirmExitEnabled.collectAsState()
                     var backPressedOnce by remember { mutableStateOf(false) }
@@ -1101,7 +1177,7 @@ open class MainActivity : ComponentActivity() {
                                     activeProfileAvatarImageUrl = activeProfileAvatarImageUrl,
                                     showProfileSelector = profiles.size > 1,
                                     onSwitchProfile = { hasSelectedProfileThisSession = false },
-                                    onNavigate = { optimisticRoute = it },
+                                    onNavigate = onDrawerNavigate,
                                     onExitApp = handleExitApp
                                 )
                             } else {
@@ -1120,7 +1196,7 @@ open class MainActivity : ComponentActivity() {
                                     activeProfileAvatarImageUrl = activeProfileAvatarImageUrl,
                                     showProfileSelector = profiles.size > 1,
                                     onSwitchProfile = { hasSelectedProfileThisSession = false },
-                                    onNavigate = { optimisticRoute = it },
+                                    onNavigate = onDrawerNavigate,
                                     onExitApp = handleExitApp
                                 )
                             }
@@ -1272,7 +1348,7 @@ private fun SidebarFocusRecoveryEffect(
         if (selectedDrawerRoute != null && drawerItems.any { it.route == selectedDrawerRoute }) {
             return@LaunchedEffect
         }
-        val fallbackRoute = drawerItems.firstOrNull()?.route ?: return@LaunchedEffect
+        val fallbackRoute = drawerItems.firstOrNull { !it.isAction }?.route ?: return@LaunchedEffect
         val requester = drawerItemFocusRequesters[fallbackRoute] ?: return@LaunchedEffect
         repeat(2) { withFrameNanos { } }
         runCatching { requester.requestFocus() }
@@ -1347,7 +1423,7 @@ private fun LegacySidebarScaffold(
         if (!showSidebar || !pendingSidebarFocusRequest || drawerState.currentValue != DrawerValue.Open) {
             return@LaunchedEffect
         }
-        val targetRoute = selectedDrawerRoute ?: drawerItems.firstOrNull()?.route ?: run {
+        val targetRoute = selectedDrawerRoute ?: drawerItems.firstOrNull { !it.isAction }?.route ?: run {
             pendingSidebarFocusRequest = false
             return@LaunchedEffect
         }
@@ -1394,6 +1470,11 @@ private fun LegacySidebarScaffold(
                         }
                 ) {
                     val isExpanded = drawerValue == DrawerValue.Open
+                    val longestDrawerLabel = remember(drawerItems) {
+                        // Navigation entries only: the VPN label changes with its state and
+                        // would make every label resize while connecting.
+                        drawerItems.filterNot { it.isAction }.maxByOrNull { it.label.length }?.label
+                    }
                     val itemWidth by animateDpAsState(
                         targetValue = if (isExpanded) openDrawerItemWidth else NuvioTheme.sizes.avatars.md,
                         animationSpec = tween(durationMillis = NuvioMotion.tokens.durations.fast, easing = NuvioMotion.tokens.easings.standard),
@@ -1478,16 +1559,25 @@ private fun LegacySidebarScaffold(
                                     icon = item.icon,
                                     selected = selectedDrawerRoute == item.route,
                                     expanded = isExpanded,
+                                    sizingLabel = longestDrawerLabel,
+                                    // Item width minus the label's own start/end padding.
+                                    labelMaxWidth = openDrawerItemWidth - 68.dp,
                                     onClick = {
-                                        keyboardController?.hide()
-                                        onNavigate(item.route)
-                                        navigateToDrawerRoute(
-                                            navController = navController,
-                                            currentRoute = currentRoute,
-                                            targetRoute = item.route
-                                        )
-                                        drawerState.setValue(DrawerValue.Closed)
-                                        pendingContentFocusTransfer = currentRoute == item.route
+                                        if (item.isAction) {
+                                            // Action entry (VPN switch): no navigation, and the
+                                            // sidebar stays open so the new state is visible.
+                                            onNavigate(item.route)
+                                        } else {
+                                            keyboardController?.hide()
+                                            onNavigate(item.route)
+                                            navigateToDrawerRoute(
+                                                navController = navController,
+                                                currentRoute = currentRoute,
+                                                targetRoute = item.route
+                                            )
+                                            drawerState.setValue(DrawerValue.Closed)
+                                            pendingContentFocusTransfer = currentRoute == item.route
+                                        }
                                     },
                                     modifier = Modifier.focusRequester(
                                         drawerItemFocusRequesters.getValue(item.route)
@@ -1495,6 +1585,8 @@ private fun LegacySidebarScaffold(
                                         .width(itemWidth)
                                         .offset(x = NuvioTheme.spacing.md)
                                 )
+                                // Sets the VPN switch a little apart from the navigation entries.
+                                if (item.isAction) Spacer(modifier = Modifier.height(14.dp))
                         }
                     }
                 }
@@ -1582,30 +1674,33 @@ private fun LegacySidebarButton(
     selected: Boolean,
     expanded: Boolean,
     modifier: Modifier = Modifier,
+    sizingLabel: String? = null,
+    labelMaxWidth: androidx.compose.ui.unit.Dp? = null,
     onClick: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val itemShape = NuvioTheme.shapes.navItem
+    // One pill only, and it follows focus. The current screen used to keep its own (white)
+    // pill while a second (grey) one moved with the D-pad, which read as two selectors;
+    // now the current screen is marked by brighter icon/label alone.
     val backgroundColor by animateColorAsState(
         targetValue = when {
-            isFocused -> NuvioTheme.colors.FocusBackground
-            expanded && selected -> NuvioTheme.colors.Secondary
+            isFocused -> NuvioTheme.colors.Secondary
             else -> Color.Transparent
         },
         label = "legacySidebarItemBackground"
     )
     val contentColor by animateColorAsState(
         targetValue = when {
-            isFocused -> NuvioTheme.colors.TextPrimary
-            expanded && selected -> NuvioTheme.colors.OnSecondary
+            isFocused -> NuvioTheme.colors.OnSecondary
+            expanded && selected -> NuvioTheme.colors.TextPrimary
             else -> NuvioTheme.colors.TextSecondary
         },
         label = "legacySidebarItemContent"
     )
     val iconTint by animateColorAsState(
         targetValue = when {
-            isFocused -> NuvioTheme.colors.TextPrimary
-            expanded && selected -> NuvioTheme.colors.OnSecondary
+            isFocused -> NuvioTheme.colors.OnSecondary
             selected -> NuvioTheme.colors.Secondary
             !expanded -> NuvioTheme.colors.TextTertiary
             else -> NuvioTheme.colors.TextSecondary
@@ -1659,10 +1754,36 @@ private fun LegacySidebarButton(
                 .align(Alignment.CenterStart)
                 .offset(x = 13.dp)
         )
+        // Marks the current screen now that the pill only follows focus.
+        if (expanded && selected && !isFocused) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(3.dp)
+                    .height(20.dp)
+                    .background(NuvioTheme.colors.Secondary, RoundedCornerShape(2.dp))
+            )
+        }
         if (expanded) {
+            // Every label uses the size that fits the longest one. Left to itself,
+            // AutoResizeText shrank only the long entry ("Impostazioni"), which looked off.
+            val baseStyle = androidx.tv.material3.LocalTextStyle.current
+            val textMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            val labelStyle = remember(baseStyle, sizingLabel, labelMaxWidth, density) {
+                if (sizingLabel.isNullOrEmpty() || labelMaxWidth == null || !baseStyle.fontSize.isSp) {
+                    baseStyle
+                } else {
+                    val needed = textMeasurer.measure(sizingLabel, baseStyle, maxLines = 1).size.width
+                    val available = with(density) { labelMaxWidth.toPx() }
+                    val factor = if (needed > 0) (available / needed).coerceAtMost(1f) else 1f
+                    baseStyle.copy(fontSize = baseStyle.fontSize * factor)
+                }
+            }
             com.nuvio.tv.ui.components.AutoResizeText(
                 text = label,
                 color = contentColor,
+                style = labelStyle,
                 textAlign = TextAlign.Start,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
@@ -1847,7 +1968,7 @@ private fun ModernSidebarScaffold(
         if (!showSidebar || !pendingSidebarFocusRequest || !isSidebarExpanded) {
             return@LaunchedEffect
         }
-        val targetRoute = selectedDrawerRoute ?: drawerItems.firstOrNull()?.route ?: run {
+        val targetRoute = selectedDrawerRoute ?: drawerItems.firstOrNull { !it.isAction }?.route ?: run {
             pendingSidebarFocusRequest = false
             return@LaunchedEffect
         }
@@ -2008,7 +2129,7 @@ private fun ModernSidebarScaffold(
                                     // Profile → first drawer item: skip moveFocus (the
                                     // Spacer gap causes it to land in content) and
                                     // request the first drawer item directly.
-                                    drawerItems.firstOrNull()?.route?.let { route ->
+                                    drawerItems.firstOrNull { !it.isAction }?.route?.let { route ->
                                         drawerItemFocusRequesters[route]?.requestFocus()
                                     }
                                     true
@@ -2049,17 +2170,22 @@ private fun ModernSidebarScaffold(
                         drawerItemFocusRequesters = drawerItemFocusRequesters,
                         onDrawerItemFocused = { focusedDrawerIndex = it },
                         onDrawerItemClick = { targetRoute ->
-                            keyboardController?.hide()
-                            onNavigate(targetRoute)
-                            navigateToDrawerRoute(
-                                navController = navController,
-                                currentRoute = currentRoute,
-                                targetRoute = targetRoute
-                            )
-                            pendingSidebarFocusRequest = false
-                            isSidebarExpanded = false
-                            sidebarCollapsePending = false
-                            pendingContentFocusTransfer = currentRoute == targetRoute
+                            if (targetRoute == VPN_TOGGLE_DRAWER_ROUTE) {
+                                // Action entry: toggle only, keep the sidebar open.
+                                onNavigate(targetRoute)
+                            } else {
+                                keyboardController?.hide()
+                                onNavigate(targetRoute)
+                                navigateToDrawerRoute(
+                                    navController = navController,
+                                    currentRoute = currentRoute,
+                                    targetRoute = targetRoute
+                                )
+                                pendingSidebarFocusRequest = false
+                                isSidebarExpanded = false
+                                sidebarCollapsePending = false
+                                pendingContentFocusTransfer = currentRoute == targetRoute
+                            }
                         },
                         activeProfileName = activeProfileName,
                         activeProfileColorHex = activeProfileColorHex,
@@ -2214,6 +2340,7 @@ private fun navigateToDrawerRoute(
     currentRoute: String?,
     targetRoute: String
 ) {
+    if (targetRoute == VPN_TOGGLE_DRAWER_ROUTE) return
     if (currentRoute == targetRoute) {
         if (targetRoute == Screen.Home.route) {
             // Scroll Home to top by clearing saved focus/scroll state on the ViewModel.

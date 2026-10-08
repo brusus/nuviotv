@@ -42,7 +42,7 @@ class StreamBadgeConfigServerTest {
             )
         )
 
-        val response = server.serve(FakePostSession(body, "/api/badges/import"))
+        val response = server.serveAuthorized(FakePostSession(body, "/api/badges/import"))
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
         assertEquals(1, settings.rules.imports.size)
@@ -73,7 +73,7 @@ class StreamBadgeConfigServerTest {
             )
         )
 
-        val response = server.serve(FakePostSession(body))
+        val response = server.serveAuthorized(FakePostSession(body))
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
         assertEquals(1, saved?.rules?.imports?.size)
@@ -105,7 +105,7 @@ class StreamBadgeConfigServerTest {
         )
         val body = Gson().toJson(mapOf("streamBadgeRules" to rules))
 
-        val response = server.serve(FakePostSession(body))
+        val response = server.serveAuthorized(FakePostSession(body))
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
         assertEquals(listOf(true, false), saved?.rules?.imports?.map { it.isActive })
@@ -136,7 +136,7 @@ class StreamBadgeConfigServerTest {
             onSettingsChanged = {}
         )
 
-        val response = server.serve(FakeGetSession())
+        val response = server.serveAuthorized(FakeGetSession())
         val body = response.data.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
 
         assertEquals(NanoHTTPD.Response.Status.OK, response.status)
@@ -221,7 +221,7 @@ class StreamBadgeConfigServerTest {
                 mapOf("sourceUrl" to "http://${InetAddress.getLoopbackAddress().hostAddress}:${origin.port}/badges.json")
             )
 
-            val response = badgeServer.serve(FakePostSession(body, "/api/badges/import"))
+            val response = badgeServer.serveAuthorized(FakePostSession(body, "/api/badges/import"))
 
             assertEquals(NanoHTTPD.Response.Status.BAD_REQUEST, response.status)
             assertEquals(0, settings.rules.imports.size)
@@ -267,10 +267,19 @@ class StreamBadgeConfigServerTest {
         )
         val body = Gson().toJson(mapOf("sourceUrl" to sourceUrl))
 
-        val response = server.serve(FakePostSession(body, "/api/badges/import"))
+        val response = server.serveAuthorized(FakePostSession(body, "/api/badges/import"))
 
         assertEquals(NanoHTTPD.Response.Status.BAD_REQUEST, response.status)
         assertEquals(0, settings.rules.imports.size)
+    }
+
+    /** Like the phone that opened the QR link: the request carries the server's access token. */
+    private fun StreamBadgeConfigServer.serveAuthorized(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        val token = accessUrl("http://test").substringAfter("t=")
+        return serve(object : NanoHTTPD.IHTTPSession by session {
+            override fun getParameters(): Map<String, List<String>> =
+                session.parameters.orEmpty() + ("t" to listOf(token))
+        })
     }
 
     private class FakePostSession(

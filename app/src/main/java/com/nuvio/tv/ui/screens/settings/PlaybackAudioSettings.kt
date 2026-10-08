@@ -75,6 +75,7 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
     onSetRememberAudioDelayPerDevice: (Boolean) -> Unit,
     onSetTunnelingEnabled: (Boolean) -> Unit,
     onSetForceOpticalPassthrough: (Boolean) -> Unit,
+    onSetForceHighestAdaptiveQuality: (Boolean) -> Unit,
     onSetDv5ToDv81Enabled: (Boolean) -> Unit,
     onSetDv7ToDv81PreserveMappingEnabled: (Boolean) -> Unit,
     onSetStripHdr10PlusSei: (Boolean) -> Unit,
@@ -293,6 +294,18 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
     videoExtraItems?.invoke(this)
 
     if (isExoEngine) {
+        item(key = "video_force_highest_adaptive_quality") {
+            ToggleSettingsItem(
+                icon = Icons.Default.Tune,
+                title = stringResource(R.string.video_force_highest_quality_title),
+                subtitle = stringResource(R.string.video_force_highest_quality_sub),
+                isChecked = playerSettings.forceHighestAdaptiveQuality,
+                onCheckedChange = onSetForceHighestAdaptiveQuality,
+                onFocused = onItemFocused,
+                enabled = enabled
+            )
+        }
+
         item(key = "audio_dv7_handling_mode") {
             val modeName = when (playerSettings.dv7HandlingMode) {
                 Dv7HandlingMode.AUTO -> stringResource(R.string.dv7_mode_auto)
@@ -370,6 +383,9 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
                 enabled = enabled
             )
         }
+
+        // "Image quality (mpv)" is intentionally not exposed: HIGH/MAXIMUM made low-end TVs
+        // stutter. The stored setting and the mpv code path are kept.
 
         item(key = "audio_mpv_hi10p_gnext_software_fallback") {
             ToggleSettingsItem(
@@ -643,6 +659,7 @@ private fun MpvHardwareDecodeModeDialog(
         maxHeight = 360.dp
     )
 }
+
 @Composable
 private fun Dv7HandlingModeDialog(
     selectedMode: Dv7HandlingMode,

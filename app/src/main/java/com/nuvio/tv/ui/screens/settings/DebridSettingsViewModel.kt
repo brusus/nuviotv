@@ -108,26 +108,18 @@ class DebridSettingsViewModel @Inject constructor(
         }
         stopFormatterServer()
         formatterServer = DebridFormatterConfigServer.startOnAvailablePort(
+            // The phone page edits on top of its own unconfirmed changes, so successive edits
+            // accumulate into one pending change instead of each discarding the previous one.
             currentSettingsProvider = {
-                val state = _uiState.value
-                DebridFormatterSettings(
-                    nameTemplate = state.streamNameTemplate,
-                    descriptionTemplate = state.streamDescriptionTemplate,
-                    streamPreferences = state.streamPreferences
-                )
+                _uiState.value.let { it.pendingFormatterSettings ?: it.appliedFormatterSettings() }
             },
             onSettingsChanged = { settings ->
-                _uiState.update { it.copy(
-                    streamNameTemplate = settings.nameTemplate,
-                    streamDescriptionTemplate = settings.descriptionTemplate,
-                    streamPreferences = settings.streamPreferences
-                ) }
-                viewModelScope.launch {
-                    dataStore.setStreamTemplates(
-                        nameTemplate = settings.nameTemplate,
-                        descriptionTemplate = settings.descriptionTemplate
+                _uiState.update {
+                    it.copy(
+                        pendingFormatterSettings = settings.takeIf { proposed ->
+                            proposed != it.appliedFormatterSettings()
+                        }
                     )
-                    dataStore.setStreamPreferences(settings.streamPreferences)
                 }
             },
             context = context,
@@ -155,9 +147,34 @@ class DebridSettingsViewModel @Inject constructor(
             it.copy(
                 isFormatterQrModeActive = false,
                 formatterQrCodeBitmap = null,
-                formatterServerUrl = null
+                formatterServerUrl = null,
+                pendingFormatterSettings = null
             )
         }
+    }
+
+    fun confirmPendingFormatterChange() {
+        val pending = _uiState.value.pendingFormatterSettings ?: return
+        _uiState.update {
+            it.copy(
+                streamNameTemplate = pending.nameTemplate,
+                streamDescriptionTemplate = pending.descriptionTemplate,
+                streamPreferences = pending.streamPreferences,
+                // Keep a newer proposal that arrived while this one was being confirmed.
+                pendingFormatterSettings = it.pendingFormatterSettings.takeIf { newer -> newer !== pending }
+            )
+        }
+        viewModelScope.launch {
+            dataStore.setStreamTemplates(
+                nameTemplate = pending.nameTemplate,
+                descriptionTemplate = pending.descriptionTemplate
+            )
+            dataStore.setStreamPreferences(pending.streamPreferences)
+        }
+    }
+
+    fun rejectPendingFormatterChange() {
+        _uiState.update { it.copy(pendingFormatterSettings = null) }
     }
 
     fun resetFormatterTemplates() {
@@ -410,8 +427,16 @@ data class DebridSettingsUiState(
     val isFormatterQrModeActive: Boolean = false,
     val formatterQrCodeBitmap: Bitmap? = null,
     val formatterServerUrl: String? = null,
-    val serverError: String? = null
+    val serverError: String? = null,
+    /** Settings sent from the phone config page, waiting for confirmation on the TV. */
+    val pendingFormatterSettings: DebridFormatterSettings? = null
 ) {
+    fun appliedFormatterSettings(): DebridFormatterSettings = DebridFormatterSettings(
+        nameTemplate = streamNameTemplate,
+        descriptionTemplate = streamDescriptionTemplate,
+        streamPreferences = streamPreferences
+    )
+
     val providerApiKeys: Map<String, String>
         get() = mapOf(
             DebridProviders.TORBOX_ID to torboxApiKey,

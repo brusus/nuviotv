@@ -4,6 +4,7 @@ import android.content.Context
 import com.nuvio.tv.R
 import com.nuvio.tv.data.local.ProfileDataStore
 import com.nuvio.tv.data.local.ProfileDataStoreFactory
+import com.nuvio.tv.data.local.dataStoreNameOfFile
 import com.nuvio.tv.domain.model.UserProfile
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -134,11 +135,13 @@ class ProfileManager @Inject constructor(
 
         factory.clearProfile(profileId)
 
-        val suffixWithExtension = "_p${profileId}.preferences_pb"
+        val profileSuffix = "_p${profileId}"
         val dataStoreDir = File(context.filesDir, "datastore")
         if (dataStoreDir.exists()) {
             dataStoreDir.listFiles()?.forEach { file ->
-                if (file.name.endsWith(suffixWithExtension)) {
+                // Covers the .bak shadow copy too; left behind it would be restored into a
+                // new profile that reuses this id if its fresh file ever reads as corrupt.
+                if (dataStoreNameOfFile(file.name)?.endsWith(profileSuffix) == true) {
                     file.delete()
                 }
             }

@@ -390,15 +390,7 @@ class WatchProgressSyncService @Inject constructor(
                     val fallbackResult = pullSnapshotFromRemote(profileId, resetDeltaState = true)
                     return Result.success(fallbackResult)
                 }
-                val remoteEntries = pullFromRemote(profileId).getOrElse { throw it }
-                val pendingUpsertKeys = mutationStore.pendingProgressUpserts(profileId).keys
-                val pendingDeleteKeys = mutationStore.pendingProgressDeletes(profileId)
-                val hadUnsyncedProgress = watchProgressPreferences.mergeRemoteEntries(
-                    remoteEntries.toMap(),
-                    pendingUpsertKeys = pendingUpsertKeys,
-                    pendingDeleteKeys = pendingDeleteKeys,
-                    profileId = profileId
-                )
+                val (remoteEntries, hadUnsyncedProgress) = fetchAndMergeSnapshot(profileId)
                 watchProgressPreferences.setDeltaState(cursorBeforeSnapshot, initialized = true, profileId = profileId)
                 val finalLocalCount = watchProgressPreferences.getAllRawEntries(profileId).size
                 Log.d(TAG, "syncDeltaFromRemote: initialized cursor $cursorBeforeSnapshot with ${remoteEntries.size} snapshot entries for profile $profileId finalLocalCount=$finalLocalCount preservedLocal=$hadUnsyncedProgress")
@@ -488,10 +480,16 @@ class WatchProgressSyncService @Inject constructor(
         }
     }
 
-    private suspend fun pullSnapshotFromRemote(
-        profileId: Int,
-        resetDeltaState: Boolean
-    ): WatchProgressRemoteSyncResult {
+    /**
+     * Pulls and merges run outside the outbound mutex, so a push can complete while the
+     * snapshot is in flight. The sync point is therefore captured before the fetch: read
+     * afterwards it would vouch for entries the (now stale) snapshot cannot contain, and
+     * the merge would delete them as removed remotely.
+     */
+    private suspend fun fetchAndMergeSnapshot(
+        profileId: Int
+    ): Pair<List<Pair<String, WatchProgress>>, Boolean> {
+        val pushPointBeforeFetch = watchProgressPreferences.getLastSuccessfulPushMs(profileId)
         val remoteEntries = pullFromRemote(profileId).getOrElse { throw it }
         val pendingUpsertKeys = mutationStore.pendingProgressUpserts(profileId).keys
         val pendingDeleteKeys = mutationStore.pendingProgressDeletes(profileId)
@@ -499,8 +497,17 @@ class WatchProgressSyncService @Inject constructor(
             remoteEntries.toMap(),
             pendingUpsertKeys = pendingUpsertKeys,
             pendingDeleteKeys = pendingDeleteKeys,
+            lastSuccessfulPushMs = pushPointBeforeFetch,
             profileId = profileId
         )
+        return remoteEntries to hadUnsyncedProgress
+    }
+
+    private suspend fun pullSnapshotFromRemote(
+        profileId: Int,
+        resetDeltaState: Boolean
+    ): WatchProgressRemoteSyncResult {
+        val (remoteEntries, hadUnsyncedProgress) = fetchAndMergeSnapshot(profileId)
         if (resetDeltaState) {
             watchProgressPreferences.setDeltaState(0L, initialized = false, profileId = profileId)
         }

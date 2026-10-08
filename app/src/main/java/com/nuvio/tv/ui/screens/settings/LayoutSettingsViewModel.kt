@@ -49,7 +49,7 @@ data class LayoutSettingsUiState(
     val modernLandscapePostersEnabled: Boolean = false,
     val modernHeroFullScreenBackdropEnabled: Boolean = false,
     val heroSectionEnabled: Boolean = true,
-    val liveTvSidebarEnabled: Boolean = true,
+    val liveTvSidebarEnabled: Boolean = false,
     val discoverLocation: DiscoverLocation = DiscoverLocation.IN_SEARCH,
     val lastNonOffDiscoverLocation: DiscoverLocation = DiscoverLocation.IN_SEARCH,
     val posterLabelsEnabled: Boolean = true,
@@ -458,10 +458,15 @@ class LayoutSettingsViewModel @Inject constructor(
         }
         stopStreamBadgeServer()
         streamBadgeServer = StreamBadgeConfigServer.startOnAvailablePort(
-            currentSettingsProvider = { _streamBadgeUiState.value.settings },
+            // The phone page edits on top of its own unconfirmed changes, so successive edits
+            // accumulate into one pending change instead of each discarding the previous one.
+            currentSettingsProvider = {
+                _streamBadgeUiState.value.let { it.pendingPhoneSettings ?: it.settings }
+            },
             onSettingsChanged = { settings ->
-                _streamBadgeUiState.update { it.copy(settings = settings) }
-                viewModelScope.launch { streamBadgeSettingsDataStore.setSettings(settings) }
+                _streamBadgeUiState.update {
+                    it.copy(pendingPhoneSettings = settings.takeIf { proposed -> proposed != it.settings })
+                }
             },
             context = context,
             logoProvider = { logoBytes }
@@ -488,9 +493,26 @@ class LayoutSettingsViewModel @Inject constructor(
             it.copy(
                 isQrModeActive = false,
                 qrCodeBitmap = null,
-                serverUrl = null
+                serverUrl = null,
+                pendingPhoneSettings = null
             )
         }
+    }
+
+    fun confirmPendingStreamBadgeChange() {
+        val pending = _streamBadgeUiState.value.pendingPhoneSettings ?: return
+        _streamBadgeUiState.update {
+            it.copy(
+                settings = pending,
+                // Keep a newer proposal that arrived while this one was being confirmed.
+                pendingPhoneSettings = it.pendingPhoneSettings.takeIf { newer -> newer !== pending }
+            )
+        }
+        viewModelScope.launch { streamBadgeSettingsDataStore.setSettings(pending) }
+    }
+
+    fun rejectPendingStreamBadgeChange() {
+        _streamBadgeUiState.update { it.copy(pendingPhoneSettings = null) }
     }
 
     fun setShowFileSizeBadges(enabled: Boolean) {
@@ -881,7 +903,9 @@ data class StreamBadgeSettingsUiState(
     val isQrModeActive: Boolean = false,
     val qrCodeBitmap: Bitmap? = null,
     val serverUrl: String? = null,
-    val serverError: String? = null
+    val serverError: String? = null,
+    /** Settings sent from the phone config page, waiting for confirmation on the TV. */
+    val pendingPhoneSettings: StreamBadgeSettings? = null
 ) {
     val rules: StreamBadgeRules
         get() = settings.rules

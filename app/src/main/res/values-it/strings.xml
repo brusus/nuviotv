@@ -431,6 +431,13 @@
 <string name="audio_mpv_hwdec_hardware_direct_desc">Usa la decodifica hardware diretta. Percorso più veloce su dispositivi compatibili.</string>
 <string name="audio_mpv_hwdec_disabled">Disattivata (no)</string>
 <string name="audio_mpv_hwdec_disabled_desc">Disabilita la decodifica hardware e utilizza solo quella software.</string>
+<string name="video_force_highest_quality_title">Usa sempre la qualità massima</string>
+<string name="video_force_highest_quality_sub">Gli stream adattivi (HLS/DASH) restano sulla qualità migliore invece di scendere quando la connessione rallenta. Può causare buffering.</string>
+<string name="audio_mpv_image_quality_title">Qualità immagine (mpv)</string>
+<string name="audio_mpv_image_quality_subtitle">Upscaling e nitidezza con il motore mpv. I livelli più alti usano più GPU.</string>
+<string name="audio_mpv_image_quality_fast">Veloce</string>
+<string name="audio_mpv_image_quality_high">Alta (spline + debanding)</string>
+<string name="audio_mpv_image_quality_maximum">Massima (upscaling nitido + nitidezza)</string>
 <string name="audio_decoder_device_only_desc">Usa solo i decoder hardware integrati. Massima compatibilità, ma potrebbe non supportare tutti i formati.</string>
 <string name="audio_decoder_prefer_device_desc">Usa i decoder hardware quando disponibili, altrimenti passa a FFmpeg. Consigliato per la maggior parte dei dispositivi.</string>
 <string name="audio_decoder_prefer_app_desc">Usa i decoder FFmpeg quando disponibili. Migliore supporto ai formati ma maggiore utilizzo della CPU.</string>
@@ -897,6 +904,8 @@
 <string name="addon_confirm_no_changes">Nessuna modifica visibile rilevata</string>
 <string name="addon_confirm_reject">Rifiuta</string>
 <string name="addon_confirm_confirm">Conferma</string>
+<string name="phone_changes_confirm_title">Applicare le modifiche dal telefono?</string>
+<string name="phone_changes_confirm_message">Le impostazioni sono state modificate da un telefono collegato a questa TV. Conferma per applicarle oppure rifiuta per mantenere quelle attuali.</string>
 <string name="catalog_order_title">Riordina cataloghi home</string>
 <string name="catalog_order_subtitle">Controlla l\'ordine delle righe dei cataloghi nella Home (Classica + Moderna + Griglia).</string>
 <string name="catalog_order_empty">Nessun catalogo home ancora disponibile.</string>
@@ -1133,7 +1142,7 @@
 <string name="library_source_trakt">TRAKT</string>
 <string name="library_syncing_library">Sincronizzazione libreria\u2026</string>
 <string name="library_type_all">Tutto</string>
-<string name="library_type_items">elementi</string>
+<string name="library_type_items">elemento</string>
 <string name="library_empty_local_title">Ancora nessun %1$s</string>
 <string name="library_empty_trakt_title">Nessun %1$s in questa lista</string>
 <string name="library_empty_local_subtitle">Inizia a salvare i tuoi preferiti per vederli qui</string>
@@ -1287,7 +1296,13 @@
 <string name="iptv_title">IPTV</string>
 <string name="iptv_subtitle">La tua playlist M3U</string>
 <string name="iptv_player_channel_list_title">Canali</string>
-<string name="cf_challenge_title">Verifica di sicurezza per %1$s. Se compare una casella, selezionala con il telecomando.</string>
+<string name="nav_vpn_on">VPN attiva</string>
+<string name="nav_vpn_off">VPN spenta</string>
+<string name="nav_vpn_connecting">VPN avvio…</string>
+<string name="nav_vpn_error_no_config">Nessuna configurazione VPN. Aggiungila in Impostazioni → Integrazioni → VPN.</string>
+<string name="nav_vpn_error_permission">Permesso VPN negato.</string>
+<string name="nav_vpn_error_generic">Connessione VPN non riuscita.</string>
+<string name="cf_challenge_title">Verifica di sicurezza per %1$s. Sposta il cursore sulla casella con le frecce e premi OK. Indietro per annullare.</string>
 <string name="iptv_source_personal">La mia lista</string>
 <string name="iptv_source_world">Mondo</string>
 <string name="iptv_country_picker_title">Scegli il paese</string>
@@ -2298,7 +2313,7 @@
 <string name="licenses_attributions_premiumize_body">Nuvio si connette a Premiumize per l\'autenticazione dell\'account, l\'accesso alla libreria cloud, i controlli della cache e le funzioni di riproduzione cloud. Nuvio non è affiliato né approvato da Premiumize.</string>
 <string name="licenses_attributions_torbox_title">TorBox</string>
 <string name="licenses_attributions_torbox_body">Nuvio si connette a TorBox per l\'autenticazione dell\'account, l\'accesso alla libreria cloud, i controlli della cache e le funzioni di riproduzione cloud. Nuvio non è affiliato né approvato da TorBox.</string>
-<string name="settings_content_discovery">Contenuti e scoperta</string>
+<string name="settings_content_discovery">Contenuti</string>
 <string name="settings_content_discovery_subtitle">Add-on, plugin, cataloghi e sorgenti di scoperta</string>
 <string name="settings_content_discovery_addons_subtitle">Gestisci add-on, ordine dei cataloghi e collezioni</string>
 <string name="settings_content_discovery_plugins_subtitle">Gestisci repository e provider di stream</string>

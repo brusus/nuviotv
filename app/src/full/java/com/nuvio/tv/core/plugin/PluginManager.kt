@@ -59,6 +59,10 @@ private const val MAX_RESPONSE_SIZE = 5 * 1024 * 1024L
 // cancelling the runner's coroutine before it can return accumulated links.
 private const val SCRAPER_TIMEOUT_MS = 120_000L
 private const val MAX_TEST_LOG_LINES = 60
+// Titles used by the plugin "Test" button.
+private const val TEST_TMDB_MOVIE = "603" // The Matrix
+private const val TEST_TMDB_SERIES = "1399" // Game of Thrones
+private const val TEST_TMDB_ANIME = "1429" // Attack on Titan
 private const val MANIFEST_SUFFIX = "/manifest.json"
 // A transient network blip (e.g. the app's connections being re-routed mid-request when a
 // VPN tunnel comes up or DNS taking a moment to settle) used to permanently drop a scraper
@@ -1071,10 +1075,12 @@ class PluginManager @Inject constructor(
 
         diagnostics.addStep("Scraper: ${scraper.name} (type=${scraper.type})")
 
-        // Use a popular movie for testing (The Matrix - 603)
-        val testTmdbId = "603"
-        val testMediaType = if (scraper.supportsType("movie")) "movie" else "series"
-        diagnostics.addStep("Test: TMDB $testTmdbId ($testMediaType)")
+        // Anime providers only answer for anime titles, and series-only providers never
+        // answer for a movie, so one fixed movie made both always report 0.
+        val isAnimeProvider = scraper.contentLanguage.any { it.contains("ja", ignoreCase = true) } ||
+            scraper.id.contains("anime", ignoreCase = true) ||
+            scraper.name.contains("anime", ignoreCase = true)
+        val supportsSeries = scraper.supportsType("series") || scraper.supportsType("tv")
 
         // Preload extractors from ALL .cs3 files in the same repo(s)
         if (scraper.type == RepositoryType.EXTERNAL_DEX) {
@@ -1086,21 +1092,25 @@ class PluginManager @Inject constructor(
             }
         }
 
-        val testSeason = if (testMediaType == "movie") null else 1
-        val testEpisode = if (testMediaType == "movie") null else 1
+        // Capped so a chatty scraper can't flood the diagnostics panel (shared by all runs).
+        val logLines = java.util.concurrent.atomic.AtomicInteger()
 
-        return try {
+        suspend fun runTest(tmdbId: String, mediaType: String): List<LocalScraperResult> {
+            val season = if (mediaType == "movie") null else 1
+            val episode = if (mediaType == "movie") null else 1
+            diagnostics.addStep(
+                if (season != null) "Test: TMDB $tmdbId ($mediaType S${season}E$episode)"
+                else "Test: TMDB $tmdbId ($mediaType)"
+            )
             val results = when (scraper.type) {
                 RepositoryType.EXTERNAL_DEX -> {
                     externalExtensionRunner.executeWithDiagnostics(
-                        scraper.id, testTmdbId, testMediaType, testSeason, testEpisode, diagnostics
+                        scraper.id, tmdbId, mediaType, season, episode, diagnostics
                     )
                 }
                 RepositoryType.NUVIO_JS -> {
                     diagnostics.addStep("Executing JS scraper...")
-                    // Capped so a chatty scraper can't flood the diagnostics panel.
-                    val logLines = java.util.concurrent.atomic.AtomicInteger()
-                    executeJsScraper(scraper, testTmdbId, testMediaType, testSeason, testEpisode) { line ->
+                    executeJsScraper(scraper, tmdbId, mediaType, season, episode) { line ->
                         val n = logLines.incrementAndGet()
                         if (n <= MAX_TEST_LOG_LINES) {
                             diagnostics.addStep(line.take(300))
@@ -1111,6 +1121,22 @@ class PluginManager @Inject constructor(
                 }
             }
             diagnostics.addStep("Result: ${results.size} streams")
+            return results
+        }
+
+        return try {
+            val results = if (isAnimeProvider) {
+                // Attack on Titan (TMDB 1429)
+                runTest(TEST_TMDB_ANIME, "tv")
+            } else {
+                // The Matrix (TMDB 603), then Game of Thrones (TMDB 1399) for series providers.
+                val movieResults = runTest(TEST_TMDB_MOVIE, "movie")
+                if (movieResults.isEmpty() && supportsSeries) {
+                    runTest(TEST_TMDB_SERIES, "tv")
+                } else {
+                    movieResults
+                }
+            }
             Result.success(results to diagnostics)
         } catch (e: Exception) {
             diagnostics.addStep("Exception: ${e.javaClass.simpleName}: ${e.message}")

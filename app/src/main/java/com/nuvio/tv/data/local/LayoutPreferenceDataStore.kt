@@ -36,6 +36,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -63,6 +65,26 @@ class LayoutPreferenceDataStore @Inject constructor(
 
     private fun store(profileId: Int = profileManager.activeProfileId.value) =
         factory.get(profileId, FEATURE)
+
+    private fun usesPrimaryCatalogs(profile: com.nuvio.tv.domain.model.UserProfile?): Boolean =
+        profile != null && !profile.isPrimary && profile.usesPrimaryAddons
+
+    // Home catalog order/disabled/titles describe the addon set, so a profile that borrows
+    // the primary profile's addons shares the primary profile's catalog settings too.
+    // Readers and setters must resolve the same id or writes land where nothing reads them.
+    private fun effectiveCatalogProfileId(): Int {
+        val pid = profileManager.activeProfileId.value
+        return if (usesPrimaryCatalogs(profileManager.profiles.value.find { it.id == pid })) 1 else pid
+    }
+
+    private val effectiveCatalogProfileIdFlow: Flow<Int> = combine(
+        profileManager.activeProfileId,
+        profileManager.profiles
+    ) { pid, profiles ->
+        if (usesPrimaryCatalogs(profiles.find { it.id == pid })) 1 else pid
+    }.distinctUntilChanged()
+
+    private fun catalogStore() = store(effectiveCatalogProfileId())
 
     private val gson = Gson()
 
@@ -191,29 +213,20 @@ class LayoutPreferenceDataStore @Inject constructor(
         selections.firstOrNull()
     }
 
-    val homeCatalogOrderKeys: Flow<List<String>> = profileManager.activeProfileId.flatMapLatest { pid ->
-        val profile = profileManager.profiles.value.find { it.id == pid }
-        val usePrimary = profile != null && !profile.isPrimary && profile.usesPrimaryAddons
-        val effectivePid = if (usePrimary) 1 else pid
-        factory.get(effectivePid, FEATURE).data.map { prefs ->
+    val homeCatalogOrderKeys: Flow<List<String>> = effectiveCatalogProfileIdFlow.flatMapLatest { pid ->
+        factory.get(pid, FEATURE).data.map { prefs ->
             parseCatalogKeys(prefs.getStringOrMigrateSet(homeCatalogOrderKeysKey))
         }
     }
 
-    val disabledHomeCatalogKeys: Flow<List<String>> = profileManager.activeProfileId.flatMapLatest { pid ->
-        val profile = profileManager.profiles.value.find { it.id == pid }
-        val usePrimary = profile != null && !profile.isPrimary && profile.usesPrimaryAddons
-        val effectivePid = if (usePrimary) 1 else pid
-        factory.get(effectivePid, FEATURE).data.map { prefs ->
+    val disabledHomeCatalogKeys: Flow<List<String>> = effectiveCatalogProfileIdFlow.flatMapLatest { pid ->
+        factory.get(pid, FEATURE).data.map { prefs ->
             parseCatalogKeys(prefs.getStringOrMigrateSet(disabledHomeCatalogKeysKey))
         }
     }
 
-    val customCatalogTitles: Flow<Map<String, String>> = profileManager.activeProfileId.flatMapLatest { pid ->
-        val profile = profileManager.profiles.value.find { it.id == pid }
-        val usePrimary = profile != null && !profile.isPrimary && profile.usesPrimaryAddons
-        val effectivePid = if (usePrimary) 1 else pid
-        factory.get(effectivePid, FEATURE).data.map { prefs ->
+    val customCatalogTitles: Flow<Map<String, String>> = effectiveCatalogProfileIdFlow.flatMapLatest { pid ->
+        factory.get(pid, FEATURE).data.map { prefs ->
             parseCustomTitles(prefs.getStringOrMigrateSet(customCatalogTitlesKey))
         }
     }
@@ -243,7 +256,9 @@ class LayoutPreferenceDataStore @Inject constructor(
     }
 
     val liveTvSidebarEnabled: Flow<Boolean> = profileFlow { prefs ->
-        prefs[liveTvSidebarEnabledKey] ?: true
+        // Off by default: the IPTV entry covers live TV; this one can be re-enabled in
+        // Settings > Layout.
+        prefs[liveTvSidebarEnabledKey] ?: false
     }
 
     val discoverLocation: Flow<DiscoverLocation> = profileFlow { prefs ->
@@ -479,7 +494,7 @@ class LayoutPreferenceDataStore @Inject constructor(
 
     suspend fun setHomeCatalogOrderKeys(keys: List<String>) {
         val normalizedKeys = normalizeCatalogOrderKeys(keys)
-        store().edit { prefs ->
+        catalogStore().edit { prefs ->
             if (normalizedKeys.isEmpty()) {
                 prefs.remove(homeCatalogOrderKeysKey)
             } else {
@@ -490,7 +505,7 @@ class LayoutPreferenceDataStore @Inject constructor(
 
     suspend fun setDisabledHomeCatalogKeys(keys: List<String>) {
         val normalizedKeys = normalizeCatalogOrderKeys(keys)
-        store().edit { prefs ->
+        catalogStore().edit { prefs ->
             if (normalizedKeys.isEmpty()) {
                 prefs.remove(disabledHomeCatalogKeysKey)
             } else {
@@ -805,7 +820,7 @@ class LayoutPreferenceDataStore @Inject constructor(
     }
 
     suspend fun setCustomCatalogTitles(titles: Map<String, String>) {
-        store().edit { prefs ->
+        catalogStore().edit { prefs ->
             val filtered = titles.filterValues { it.isNotBlank() }
             if (filtered.isEmpty()) {
                 prefs.remove(customCatalogTitlesKey)

@@ -424,6 +424,13 @@ internal fun PlayerRuntimeController.observeSubtitleSettings() {
                 mpvView?.applyHardwareDecodeMode(mpvHardwareDecodeModeSetting)
             }
 
+            val previousMpvImageQuality = mpvImageQualitySetting
+            mpvImageQualitySetting = settings.mpvImageQuality
+            if (isUsingMpvEngine() && previousMpvImageQuality != mpvImageQualitySetting) {
+                // Scaler/shader options are init-time options: takes effect on next playback.
+                mpvView?.applyImageQuality(mpvImageQualitySetting)
+            }
+
             val resolvedAudioLanguages = resolvePreferredAudioLanguages(
                 preferredAudioLanguage = settings.preferredAudioLanguage,
                 secondaryPreferredAudioLanguage = settings.secondaryPreferredAudioLanguage,

@@ -26,6 +26,7 @@ import com.nuvio.tv.core.torrent.TorrentService
 import com.nuvio.tv.data.local.AutoSkipSegmentType
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.data.local.MpvHardwareDecodeMode
+import com.nuvio.tv.data.local.MpvImageQuality
 import com.nuvio.tv.data.local.NextEpisodeThresholdMode
 import com.nuvio.tv.data.local.AudioDelayRouteDataStore
 import com.nuvio.tv.data.local.PlayerSettings
@@ -481,6 +482,7 @@ class PlayerRuntimeController(
         PlayerSettings.DEFAULT_STILL_WATCHING_EPISODE_THRESHOLD
     internal var mpvHi10pGnextSoftwareFallbackEnabledSetting: Boolean = false
     internal var mpvHardwareDecodeModeSetting: MpvHardwareDecodeMode = MpvHardwareDecodeMode.AUTO_SAFE
+    internal var mpvImageQualitySetting: MpvImageQuality = MpvImageQuality.FAST
     internal var mpvPreferredAudioLanguages: List<String> = emptyList()
     internal var currentStreamBingeGroup: String? = navigationArgs.bingeGroup
     internal var hasAppliedRememberedAudioSelection: Boolean = false
@@ -547,8 +549,6 @@ class PlayerRuntimeController(
     internal var cachedDecoderPriority: Int = 1
     internal var hasTriedAudioPcmFallback: Boolean = false
     internal var pendingAudioPcmFallbackRebuild: Boolean = false
-    internal var hasTriedDv7HevcFallback: Boolean = false
-    internal var forceDv7ToHevc: Boolean = false
     internal var startupRetryCount: Int = 0
     internal var liveReconnectAttempts: Int = 0
     internal var lastChannelZapAtMs: Long = 0L

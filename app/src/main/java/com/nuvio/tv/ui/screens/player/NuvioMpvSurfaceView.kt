@@ -6,9 +6,11 @@ import android.util.Log
 import android.view.SurfaceHolder
 import com.nuvio.tv.core.network.VpnBypassProxyServer
 import com.nuvio.tv.data.local.MpvHardwareDecodeMode
+import com.nuvio.tv.data.local.MpvImageQuality
 import com.nuvio.tv.data.local.SubtitleStyleSettings
 import `is`.xyz.mpv.BaseMPVView
 import `is`.xyz.mpv.Utils
+import java.io.File
 import java.util.Locale
 import kotlin.math.pow
 import kotlin.math.roundToLong
@@ -24,6 +26,7 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
     private var pendingInitialMediaUrl: String? = null
     private var pendingInitialStartOption: String? = null
     private var hardwareDecodeMode: MpvHardwareDecodeMode = MpvHardwareDecodeMode.AUTO_SAFE
+    private var imageQuality: MpvImageQuality = MpvImageQuality.FAST
     private var hi10pGnextSoftwareFallbackActive = false
     private var appliedHi10pGnextSoftwareFallback: Boolean? = null
     private var currentAspectMode: AspectMode = AspectMode.ORIGINAL
@@ -257,10 +260,18 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         hardwareDecodeMode = mode
         if (!initialized || hi10pGnextSoftwareFallbackActive) return
         runCatching {
-            mpv.setPropertyString("hwdec", mode.toMpvHwdecValue())
+            mpv.setPropertyString("hwdec", effectiveHwdecValue())
         }.onFailure {
             Log.w(TAG, "Failed to apply mpv hardware decode mode ($mode): ${it.message}")
         }
+    }
+
+    /**
+     * Scaler/deband/shader options are set in [initOptions], so a change made while mpv is
+     * already initialized takes effect from the next mpv instance (next playback).
+     */
+    fun applyImageQuality(quality: MpvImageQuality) {
+        imageQuality = quality
     }
 
     fun applyHi10pGnextSoftwareFallback(active: Boolean) {
@@ -268,7 +279,7 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         if (!initialized || appliedHi10pGnextSoftwareFallback == active) return
         runCatching {
             val videoOutput = if (active) MPV_VIDEO_OUTPUT_GPU_NEXT else MPV_VIDEO_OUTPUT_GPU
-            val hardwareDecoder = if (active) MPV_HWDEC_DISABLED else hardwareDecodeMode.toMpvHwdecValue()
+            val hardwareDecoder = effectiveHwdecValue()
             setVo(videoOutput)
             mpv.setPropertyString("vo", videoOutput)
             mpv.setPropertyString("hwdec", hardwareDecoder)
@@ -631,10 +642,11 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         mpv.setOptionString("sub-font", "Roboto")
         mpv.setOptionString("sub-use-margins", "yes")
         mpv.setOptionString("sub-ass-force-margins", "yes")
-        mpv.setOptionString(
-            "hwdec",
-            if (hi10pGnextSoftwareFallbackActive) MPV_HWDEC_DISABLED else hardwareDecodeMode.toMpvHwdecValue()
-        )
+        // HIGH/MAXIMUM image quality: effectiveHwdecValue() swaps zero-copy MediaCodec for
+        // mediacodec-copy, since zero-copy bypasses mpv's GPU scaling/deband/shaders.
+        mpv.setOptionString("hwdec", effectiveHwdecValue())
+        applyImageQualityOptions()
+        Log.i(TAG, "MPV_IMAGE_QUALITY: quality=$imageQuality hwdecMode=$hardwareDecodeMode hwdec=${effectiveHwdecValue()}")
         appliedHi10pGnextSoftwareFallback = hi10pGnextSoftwareFallbackActive
         mpv.setOptionString("hwdec-codecs", "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1")
         mpv.setOptionString("ao", "audiotrack,opensles")
@@ -649,7 +661,9 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         // stop at the first network hiccup. Unknown keys on older ffmpeg are ignored.
         mpv.setOptionString(
             "stream-lavf-o",
-            "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=10"
+            // delay_max kept low: a stream that's simply broken (403s, closed at once) must
+            // fail in seconds so the user can pick another source, not back off for ~11s.
+            "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2"
         )
         mpv.setOptionString("keep-open", "yes")
         mpv.setOptionString("softvol", "yes")
@@ -719,6 +733,56 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * hwdec value actually handed to mpv. For HIGH/MAXIMUM image quality, zero-copy MediaCodec
+     * output ("mediacodec", "mediacodec,mediacodec-copy", and "auto-safe" which resolves to
+     * zero-copy on Android) is rendered straight to the surface and bypasses mpv's GPU
+     * scalers, deband and user shaders, so those modes are switched to copy-back instead.
+     */
+    private fun effectiveHwdecValue(): String {
+        if (hi10pGnextSoftwareFallbackActive) return MPV_HWDEC_DISABLED
+        val base = hardwareDecodeMode.toMpvHwdecValue()
+        if (imageQuality == MpvImageQuality.FAST) return base
+        return when (hardwareDecodeMode) {
+            MpvHardwareDecodeMode.HARDWARE_DIRECT,
+            MpvHardwareDecodeMode.LEGACY_DIRECT_COPY,
+            MpvHardwareDecodeMode.AUTO_SAFE -> MPV_HWDEC_COPY
+            MpvHardwareDecodeMode.HARDWARE_COPY,
+            MpvHardwareDecodeMode.DISABLED -> base
+        }
+    }
+
+    private fun applyImageQualityOptions() {
+        if (imageQuality == MpvImageQuality.FAST) return
+        mpv.setOptionString(
+            "scale",
+            if (imageQuality == MpvImageQuality.MAXIMUM) "ewa_lanczossharp" else "spline36"
+        )
+        mpv.setOptionString("cscale", "spline36")
+        mpv.setOptionString("dscale", "mitchell")
+        mpv.setOptionString("sigmoid-upscaling", "yes")
+        mpv.setOptionString("deband", "yes")
+        mpv.setOptionString("deband-iterations", "1")
+        mpv.setOptionString("deband-threshold", "48")
+        if (imageQuality == MpvImageQuality.MAXIMUM) {
+            // The sharpen pass is a GPU user shader: it only runs because effectiveHwdecValue()
+            // avoids zero-copy MediaCodec output, which would skip mpv's GPU pipeline entirely.
+            ensureSharpenShaderFile()?.let { mpv.setOptionString("glsl-shaders", it) }
+        }
+    }
+
+    private fun ensureSharpenShaderFile(): String? {
+        val file = File(context.filesDir, SHARPEN_SHADER_FILE_NAME)
+        if (sharpenShaderWritten && file.exists()) return file.path
+        return runCatching {
+            file.writeText(SHARPEN_SHADER_SOURCE)
+            sharpenShaderWritten = true
+            file.path
+        }.onFailure {
+            Log.w(TAG, "Failed to write mpv sharpen shader: ${it.message}")
+        }.getOrNull()
+    }
+
     private fun toMpvColor(color: Int): String {
         return String.format(Locale.US, "#%08X", color)
     }
@@ -776,6 +840,29 @@ class NuvioMpvSurfaceView @JvmOverloads constructor(
         private const val MPV_VIDEO_OUTPUT_GPU = "gpu"
         private const val MPV_VIDEO_OUTPUT_GPU_NEXT = "gpu-next"
         private const val MPV_HWDEC_DISABLED = "no"
+        private const val MPV_HWDEC_COPY = "mediacodec-copy"
+        private const val SHARPEN_SHADER_FILE_NAME = "nuvio_sharpen.glsl"
+        @Volatile
+        private var sharpenShaderWritten = false
+        private val SHARPEN_SHADER_SOURCE = """
+//!HOOK OUTPUT
+//!BIND HOOKED
+//!DESC NuvioTV contrast-adaptive sharpen
+#define SHARPNESS 0.45
+vec4 hook() {
+    vec3 c = HOOKED_texOff(vec2(0.0, 0.0)).rgb;
+    vec3 n = HOOKED_texOff(vec2(0.0, -1.0)).rgb;
+    vec3 s = HOOKED_texOff(vec2(0.0, 1.0)).rgb;
+    vec3 e = HOOKED_texOff(vec2(1.0, 0.0)).rgb;
+    vec3 w = HOOKED_texOff(vec2(-1.0, 0.0)).rgb;
+    vec3 mn = min(c, min(min(n, s), min(e, w)));
+    vec3 mx = max(c, max(max(n, s), max(e, w)));
+    vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+    vec3 wgt = -amp * mix(0.125, 0.2, SHARPNESS);
+    vec3 outc = (c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt);
+    return vec4(clamp(outc, 0.0, 1.0), 1.0);
+}
+""".trimStart()
         /** `loadfile` insertion index; only meaningful for insert-at flags, -1 is mpv's default. */
         private const val LOADFILE_DEFAULT_INDEX = "-1"
         private const val MPV_COVER_FALLBACK_SCALE = 1.15f

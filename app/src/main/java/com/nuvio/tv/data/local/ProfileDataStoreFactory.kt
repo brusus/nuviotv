@@ -23,6 +23,21 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import java.io.File
 
+private const val PREFERENCES_FILE_SUFFIX = ".preferences_pb"
+private const val SHADOW_COPY_SUFFIX = ".bak"
+// DataStore writes through "<file>.tmp" and renames; a crash mid-write leaves it behind.
+private const val DATASTORE_TEMP_SUFFIX = ".tmp"
+
+/**
+ * Returns the DataStore name a file in the datastore directory belongs to — for the
+ * preferences file itself, its shadow copy and its temp file — or null for anything else.
+ */
+internal fun dataStoreNameOfFile(fileName: String): String? {
+    val mainFileName = fileName.removeSuffix(SHADOW_COPY_SUFFIX).removeSuffix(DATASTORE_TEMP_SUFFIX)
+    if (!mainFileName.endsWith(PREFERENCES_FILE_SUFFIX)) return null
+    return mainFileName.removeSuffix(PREFERENCES_FILE_SUFFIX)
+}
+
 private class ScopedDataStore(
     val store: DataStore<Preferences>,
     val scope: CoroutineScope,
@@ -110,11 +125,17 @@ class ProfileDataStoreFactory @Inject constructor(
         deletedProfileIds.clear()
         corruptedFileNames.clear()
 
-        val cachedFileNames = cachedStores.keys.mapTo(mutableSetOf()) { "$it.preferences_pb" }
         val dataStoreDir = File(context.filesDir, "datastore")
         if (!dataStoreDir.exists()) return@withContext
         dataStoreDir.listFiles()?.forEach { file ->
-            if (file.name !in cachedFileNames && isProfileScopedDataStoreFile(file.name)) {
+            val dataStoreName = dataStoreNameOfFile(file.name) ?: return@forEach
+            if (dataStoreName in retainedStandaloneDataStoreNames) return@forEach
+            // A cached store still owns its live file (and any in-flight .tmp), but its
+            // shadow copy must go: clearing writes an empty file, which writeShadowCopy
+            // skips, so the old .bak would keep the signed-out account's data.
+            val ownedByLiveStore = dataStoreName in cachedStores &&
+                !file.name.endsWith(SHADOW_COPY_SUFFIX)
+            if (!ownedByLiveStore) {
                 file.delete()
             }
         }
@@ -124,12 +145,6 @@ class ProfileDataStoreFactory @Inject constructor(
 
     fun markProfileCreated(profileId: Int) {
         deletedProfileIds.remove(profileId)
-    }
-
-    private fun isProfileScopedDataStoreFile(fileName: String): Boolean {
-        if (!fileName.endsWith(".preferences_pb")) return false
-        val dataStoreName = fileName.removeSuffix(".preferences_pb")
-        return dataStoreName !in retainedStandaloneDataStoreNames
     }
 
     private fun createAndCache(fileName: String): ScopedDataStore {
@@ -183,7 +198,7 @@ class ProfileDataStoreFactory @Inject constructor(
 
     internal fun writeShadowCopy(fileName: String, preferences: Preferences) {
         val sourceFile = File(File(context.filesDir, "datastore"), "$fileName.preferences_pb")
-        val backupFile = File(File(context.filesDir, "datastore"), "$fileName.preferences_pb.bak")
+        val backupFile = File(File(context.filesDir, "datastore"), "$fileName$PREFERENCES_FILE_SUFFIX$SHADOW_COPY_SUFFIX")
         try {
             if (sourceFile.exists() && sourceFile.length() > 0) {
                 sourceFile.copyTo(backupFile, overwrite = true)
@@ -194,7 +209,7 @@ class ProfileDataStoreFactory @Inject constructor(
     }
 
     private fun recoverFromShadowCopy(fileName: String): Preferences? {
-        val backupFile = File(File(context.filesDir, "datastore"), "$fileName.preferences_pb.bak")
+        val backupFile = File(File(context.filesDir, "datastore"), "$fileName$PREFERENCES_FILE_SUFFIX$SHADOW_COPY_SUFFIX")
         if (!backupFile.exists() || backupFile.length() == 0L) return null
         return try {
             val source = backupFile.inputStream().use { input ->

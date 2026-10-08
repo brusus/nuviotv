@@ -187,6 +187,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setMpvHardwareDecodeMode(mode)
     }
 
+    suspend fun setForceHighestAdaptiveQuality(enabled: Boolean) {
+        playerSettingsDataStore.setForceHighestAdaptiveQuality(enabled)
+    }
+
     suspend fun setMpvHi10pGnextSoftwareFallbackEnabled(enabled: Boolean) {
         playerSettingsDataStore.setMpvHi10pGnextSoftwareFallbackEnabled(enabled)
     }
