@@ -45,6 +45,7 @@ import javax.inject.Singleton
 private const val TAG = "PluginRuntime"
 private const val PLUGIN_TIMEOUT_MS = 60_000L
 private const val NO_CHALLENGE_HEADER = "X-Nuvio-No-Challenge"
+private const val MANUAL_REDIRECT_HEADER = "X-Nuvio-Redirect"
 // Sized for the largest payload a shipped scraper needs in full: StreamingCommunity's title
 // sitemap is ~3.3MB, and cutting it at 1MB hid two thirds of that site's catalog.
 private const val MAX_FETCH_RESPONSE_BYTES = 6 * 1024 * 1024
@@ -656,6 +657,7 @@ class PluginRuntime @Inject constructor(
             // Scrapers mark background probes (e.g. "is this domain still alive?") with this
             // header: a challenge there must not pop the interactive Cloudflare check.
             val skipChallengeSolve = headers.remove(NO_CHALLENGE_HEADER) != null
+            val manualRedirect = headers.remove(MANUAL_REDIRECT_HEADER) != null
 
             // Default User-Agent
             if (!headers.containsKey("User-Agent")) {
@@ -698,10 +700,16 @@ class PluginRuntime @Inject constructor(
             val request = requestBuilder.build()
             // Per scraper (its whole traffic) or per destination host (e.g. MixDrop, whose
             // signed media URLs must be resolved from the same IP the player will use).
-            val client = if (PluginSafety.shouldBypassVpn(scraperId) || PluginSafety.shouldBypassVpnForUrl(url)) {
+            val baseClient = if (PluginSafety.shouldBypassVpn(scraperId) || PluginSafety.shouldBypassVpnForUrl(url)) {
                 getBypassVpnClientOrDefault()
             } else {
                 httpClient
+            }
+            // newBuilder() shares the connection pool and every other setting.
+            val client = if (manualRedirect) {
+                baseClient.newBuilder().followRedirects(false).followSslRedirects(false).build()
+            } else {
+                baseClient
             }
             val call = client.newCall(request)
             inFlightCalls.add(call)
@@ -915,7 +923,15 @@ class PluginRuntime @Inject constructor(
                 // instead of the real address, so every such call failed before
                 // any network request was even attempted.
                 var urlString = (url && typeof url.href === 'string') ? url.href : String(url);
-                var result = __native_fetch(urlString, method, JSON.stringify(headers), body);
+                // fetch(..., { redirect: 'manual' }): the caller needs the 3xx response
+                // itself (e.g. the session cookie a login sets on its 302). The native
+                // side strips this marker and does not follow the redirect.
+                var nativeHeaders = headers;
+                if (options.redirect === 'manual') {
+                    nativeHeaders = Object.assign({}, headers);
+                    nativeHeaders['X-Nuvio-Redirect'] = 'manual';
+                }
+                var result = __native_fetch(urlString, method, JSON.stringify(nativeHeaders), body);
                 var parsed = JSON.parse(result);
 
                 if (signal && signal.aborted) {
