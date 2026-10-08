@@ -1063,6 +1063,21 @@ class PluginManager @Inject constructor(
     }
 
     /**
+     * Runs the scraper once so it logs in with the account just saved, and reports
+     * whether the site accepted it. See [ScraperLoginCheck] for the log convention.
+     */
+    suspend fun checkScraperLogin(scraperId: String): ScraperLoginCheck {
+        val scraper = dataStore.scrapers.first().find { it.id == scraperId }
+            ?: return ScraperLoginCheck.UNKNOWN
+        if (scraper.type != RepositoryType.NUVIO_JS) return ScraperLoginCheck.UNKNOWN
+        val outcome = java.util.concurrent.atomic.AtomicReference(ScraperLoginCheck.UNKNOWN)
+        executeJsScraper(scraper, TEST_TMDB_MOVIE, "movie", null, null) { line ->
+            ScraperLoginCheck.fromLogLine(line)?.let { outcome.set(it) }
+        }
+        return outcome.get()
+    }
+
+    /**
      * Test a scraper with sample data, returning results along with diagnostic steps.
      */
     suspend fun testScraper(scraperId: String): Result<Pair<List<LocalScraperResult>, TestDiagnostics>> {

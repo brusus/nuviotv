@@ -3094,5 +3094,7 @@
 <string name="plugin_login_clear">Cancella</string>
 <string name="plugin_login_cancel">Annulla</string>
 <string name="plugin_login_saved">Accesso salvato per %1$s</string>
+<string name="plugin_login_verified">Accesso riuscito per %1$s</string>
+<string name="plugin_login_rejected">Email o password errati per %1$s</string>
 <string name="plugin_login_cleared">Accesso cancellato per %1$s</string>
 </resources>

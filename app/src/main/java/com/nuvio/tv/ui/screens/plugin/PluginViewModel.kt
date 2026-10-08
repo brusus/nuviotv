@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.nuvio.tv.R
 import com.nuvio.tv.core.plugin.PluginManager
 import com.nuvio.tv.core.plugin.PluginSafety
+import com.nuvio.tv.core.plugin.ScraperLoginCheck
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.core.qr.QrCodeGenerator
 import com.nuvio.tv.core.server.DeviceIpAddress
@@ -145,11 +146,29 @@ class PluginViewModel @Inject constructor(
                 login.scraperId,
                 mapOf("email" to login.email.trim(), "password" to login.password)
             )
+            // Try the account right away, so wrong credentials are reported here
+            // instead of silently leaving the provider on its anonymous quality.
+            val check = if (login.email.isBlank() || login.password.isBlank()) {
+                ScraperLoginCheck.UNKNOWN
+            } else {
+                pluginManager.checkScraperLogin(login.scraperId)
+            }
             _uiState.update {
-                it.copy(
-                    scraperLogin = null,
-                    successMessage = context.getString(R.string.plugin_login_saved, login.scraperName)
-                )
+                when (check) {
+                    // Keep the dialog open so the user can correct the fields.
+                    ScraperLoginCheck.REJECTED -> it.copy(
+                        scraperLogin = login.copy(isSaving = false),
+                        errorMessage = context.getString(R.string.plugin_login_rejected, login.scraperName)
+                    )
+                    ScraperLoginCheck.OK -> it.copy(
+                        scraperLogin = null,
+                        successMessage = context.getString(R.string.plugin_login_verified, login.scraperName)
+                    )
+                    ScraperLoginCheck.UNKNOWN -> it.copy(
+                        scraperLogin = null,
+                        successMessage = context.getString(R.string.plugin_login_saved, login.scraperName)
+                    )
+                }
             }
         }
     }

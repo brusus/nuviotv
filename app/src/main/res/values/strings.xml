@@ -2251,6 +2251,8 @@
     <string name="plugin_login_clear">Clear</string>
     <string name="plugin_login_cancel">Cancel</string>
     <string name="plugin_login_saved">Login saved for %1$s</string>
+    <string name="plugin_login_verified">Signed in to %1$s</string>
+    <string name="plugin_login_rejected">Wrong email or password for %1$s</string>
     <string name="plugin_login_cleared">Login cleared for %1$s</string>
     <string name="plugin_test_found_streams">Found %1$d streams</string>
     <string name="plugin_version">Version %1$s</string>

@@ -56,6 +56,8 @@ class PluginManager {
 
     suspend fun updateScraperSettings(scraperId: String, updates: Map<String, String>) = Unit
 
+    suspend fun checkScraperLogin(scraperId: String): ScraperLoginCheck = ScraperLoginCheck.UNKNOWN
+
     suspend fun executeScrapers(
         tmdbId: String,
         mediaType: String,
