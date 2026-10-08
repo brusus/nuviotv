@@ -44,6 +44,7 @@ import javax.inject.Singleton
 
 private const val TAG = "PluginRuntime"
 private const val PLUGIN_TIMEOUT_MS = 60_000L
+private const val NO_CHALLENGE_HEADER = "X-Nuvio-No-Challenge"
 // Sized for the largest payload a shipped scraper needs in full: StreamingCommunity's title
 // sitemap is ~3.3MB, and cutting it at 1MB hid two thirds of that site's catalog.
 private const val MAX_FETCH_RESPONSE_BYTES = 6 * 1024 * 1024
@@ -652,6 +653,10 @@ class PluginRuntime @Inject constructor(
                 // Ignore header parsing errors
             }
 
+            // Scrapers mark background probes (e.g. "is this domain still alive?") with this
+            // header: a challenge there must not pop the interactive Cloudflare check.
+            val skipChallengeSolve = headers.remove(NO_CHALLENGE_HEADER) != null
+
             // Default User-Agent
             if (!headers.containsKey("User-Agent")) {
                 headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -774,7 +779,7 @@ class PluginRuntime @Inject constructor(
                     if (CloudflareChallengeSolver.isChallengeResponse(httpResponse.code, responseBody)) {
                         // Challenged again although a clearance was sent: it expired.
                         cfChallengeSolver.invalidate(url)
-                        if (allowChallengeSolve) {
+                        if (allowChallengeSolve && !skipChallengeSolve) {
                             logSink?.invoke("Cloudflare challenge on ${CloudflareChallengeSolver.hostOf(url)}: solving in WebView...")
                             if (cfChallengeSolver.solveBlocking(url) != null) {
                                 logSink?.invoke("Cloudflare challenge cleared, retrying request")

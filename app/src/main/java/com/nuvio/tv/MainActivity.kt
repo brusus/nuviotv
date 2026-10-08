@@ -1214,10 +1214,13 @@ open class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            com.nuvio.tv.ui.components.VpnStatusDot(
-                                state = vpnConnectionState,
-                                modifier = Modifier.align(Alignment.TopStart)
-                            )
+                            // Never draw the dot over a playing video.
+                            if (currentRoute?.startsWith("player/") != true) {
+                                com.nuvio.tv.ui.components.VpnStatusDot(
+                                    state = vpnConnectionState,
+                                    modifier = Modifier.align(Alignment.TopStart)
+                                )
+                            }
                             if (autoNextOverlay != null) {
                                 androidx.compose.runtime.DisposableEffect(navBackStackEntry) {
                                     val callback = object : androidx.activity.OnBackPressedCallback(true) {

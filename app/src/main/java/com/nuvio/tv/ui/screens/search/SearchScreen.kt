@@ -543,7 +543,8 @@ fun SearchScreen(
                 .dpadRepeatThrottle(),
             state = listState,
             contentPadding = PaddingValues(
-                top = if (isDiscoverMode) 10.dp else NuvioTheme.spacing.lg,
+                // Same inset with and without a query, so the field does not jump while typing.
+                top = NuvioTheme.spacing.lg,
                 bottom = NuvioTheme.spacing.lg
             ),
             verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.lg)
