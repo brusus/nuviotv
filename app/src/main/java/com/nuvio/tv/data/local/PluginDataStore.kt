@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import java.io.File
 import javax.inject.Inject
@@ -32,23 +33,16 @@ class PluginDataStore @Inject constructor(
 ) {
     companion object {
         private const val FEATURE = "plugin_settings"
+        private const val SHARED_PROFILE_ID = 1
     }
 
-    private fun effectiveProfileId(): Int {
-        val active = profileManager.activeProfile
-        return if (active != null && active.usesPrimaryPlugins) 1 else profileManager.activeProfileId.value
-    }
+    // Plugins are shared by every profile: they always live in the primary profile's store.
+    private fun effectiveProfileId(): Int = SHARED_PROFILE_ID
 
     private fun store(profileId: Int = effectiveProfileId()) =
         factory.get(profileId, FEATURE)
 
-    private val effectiveProfileIdFlow: Flow<Int> = combine(
-        profileManager.activeProfileId,
-        profileManager.profiles
-    ) { activeProfileId, profiles ->
-        val activeProfile = profiles.firstOrNull { it.id == activeProfileId }
-        if (activeProfile?.usesPrimaryPlugins == true) 1 else activeProfileId
-    }.distinctUntilChanged()
+    private val effectiveProfileIdFlow: Flow<Int> = flowOf(SHARED_PROFILE_ID)
 
     private val repositoriesKey = stringPreferencesKey("repositories")
     private val scrapersKey = stringPreferencesKey("scrapers")

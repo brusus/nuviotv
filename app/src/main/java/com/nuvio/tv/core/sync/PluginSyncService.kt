@@ -43,7 +43,8 @@ class PluginSyncService @Inject constructor(
     suspend fun pushToRemote(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val activeProfile = profileManager.activeProfile
-            val profileId = profileManager.activeProfileId.value
+            // Plugins are shared by every profile and stored (and synced) as the primary's.
+            val profileId = 1
             Log.d(TAG, "pushToRemote: activeProfile=${activeProfile?.id} isPrimary=${activeProfile?.isPrimary} usesPrimaryPlugins=${activeProfile?.usesPrimaryPlugins} profileId=$profileId")
 
             if (activeProfile != null && !activeProfile.isPrimary && activeProfile.usesPrimaryPlugins) {
@@ -89,9 +90,7 @@ class PluginSyncService @Inject constructor(
                     IllegalStateException("Unable to resolve sync owner for plugin sync")
                 )
 
-            val activeProfile = profileManager.activeProfile
-            val profileId = if (activeProfile != null && !activeProfile.isPrimary && activeProfile.usesPrimaryPlugins) 1
-                            else profileManager.activeProfileId.value
+            val profileId = 1
 
             val remotePlugins = withJwtRefreshRetry {
                 postgrest.from("plugins")
