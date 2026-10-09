@@ -2216,7 +2216,13 @@ private fun PlayerControlsOverlay(
                     }
 
                     val hasYear = !uiState.releaseYear.isNullOrBlank()
-                    val showVia = !uiState.isPlaying && !uiState.currentStreamName.isNullOrBlank()
+                    // Shown whenever the controls are up (not only while paused): with
+                    // next-episode auto-play the source is no longer something the user picked.
+                    val showVia = !uiState.currentStreamName.isNullOrBlank()
+                    val engineLabel = when (uiState.internalPlayerEngine) {
+                        InternalPlayerEngine.MVP_PLAYER -> "mpv"
+                        else -> "ExoPlayer"
+                    }
                     val yearText = uiState.releaseYear.orEmpty()
 
                     if (hasYear || showVia) {
@@ -2235,7 +2241,10 @@ private fun PlayerControlsOverlay(
                                 exit = fadeOut(animationSpec = tween(durationMillis = NuvioMotion.tokens.durations.fast))
                             ) {
                                 Text(
-                                    text = stringResource(R.string.player_via, (uiState.currentStreamName ?: "").replace("\n", " · ")),
+                                    text = stringResource(
+                                        R.string.player_via,
+                                        (uiState.currentStreamName ?: "").replace("\n", " · ")
+                                    ) + " · " + engineLabel,
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = Color.White.copy(alpha = 0.68f),
                                     maxLines = 2,
