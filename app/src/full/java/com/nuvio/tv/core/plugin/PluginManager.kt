@@ -1277,7 +1277,14 @@ class PluginManager @Inject constructor(
                     version = info.version,
                     filename = info.filename,
                     supportedTypes = info.supportedTypes,
-                    enabled = existingScraper?.enabled ?: defaultEnabled,
+                    // The repository switching a provider off (dead site) wins over the
+                    // local toggle; one it switches back on returns to its default. In
+                    // between, the user's own choice is kept.
+                    enabled = when {
+                        !info.enabled -> false
+                        existingScraper == null || !existingScraper.manifestEnabled -> defaultEnabled
+                        else -> existingScraper.enabled
+                    },
                     manifestEnabled = info.enabled,
                     logo = info.logo,
                     contentLanguage = info.contentLanguage ?: emptyList(),

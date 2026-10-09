@@ -30,6 +30,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** Hard ceiling for next-episode stream search to prevent hanging forever. */
 private const val NEXT_EPISODE_HARD_TIMEOUT_MS = 120_000L
+private const val NEXT_EPISODE_BINGE_GROUP_EXTRA_WAIT_MS = 15_000L
 private const val CLOUD_LIBRARY_AUTO_NEXT_TIMEOUT_MS = 65_000L
 
 /**
@@ -1784,6 +1785,16 @@ internal fun PlayerRuntimeController.playNextEpisode(userInitiated: Boolean = fa
                             lastSuccessData?.let { trySelectStream(it)?.let { s -> recordSelection(s) } }
                         }
                     }
+                }
+                // The short timeout is tuned for "any stream will do". When we are looking
+                // for the source the user was watching, its provider may simply be slower
+                // than that (plugin scrapers take several seconds on a TV stick): keep
+                // waiting for it, and only then give up and show the picker.
+                if (!autoSelectTriggered &&
+                    currentStreamBingeGroup != null &&
+                    playerSettings.streamAutoPlayPreferBingeGroupForNextEpisode
+                ) {
+                    withTimeoutOrNull(NEXT_EPISODE_BINGE_GROUP_EXTRA_WAIT_MS) { searchSettled.await() }
                 }
                 innerJob.cancel()
             } else if (timeoutSeconds == 0) {
