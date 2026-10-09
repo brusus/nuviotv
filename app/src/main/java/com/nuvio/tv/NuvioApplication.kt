@@ -90,6 +90,8 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
         SentryInitializer.start(this, sentrySettingsDataStore)
         PluginRuntimeHooks.onApplicationCreate(this)
         com.nuvio.tv.core.util.ForegroundActivityTracker.register(this)
+        // Cheap (one idle thread): kept in release so a freeze on the TV can be read from logcat.
+        com.nuvio.tv.core.util.MainThreadWatchdog.start()
         androidTvChannelSyncService.start()
         // These read and write per-profile data: wait until the last-used profile is loaded,
         // otherwise they run against the placeholder profile 1 (plugin repo added to one

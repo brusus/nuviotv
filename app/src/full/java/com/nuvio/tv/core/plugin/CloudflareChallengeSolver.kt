@@ -12,6 +12,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -24,6 +25,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.URI
@@ -58,6 +61,7 @@ class CloudflareChallengeSolver(private val context: Context) {
     private val clearances = ConcurrentHashMap<String, Clearance>()
     private val failedUntil = ConcurrentHashMap<String, Long>()
     private val inFlight = ConcurrentHashMap<String, CompletableDeferred<Clearance?>>()
+    private val solveMutex = Mutex()
 
     private val webViewUserAgent: String by lazy {
         runCatching { WebSettings.getDefaultUserAgent(context) }.getOrElse { FALLBACK_USER_AGENT }
@@ -138,7 +142,14 @@ class CloudflareChallengeSolver(private val context: Context) {
         if (existing != null) return runBlocking { existing.await() }
 
         val result = try {
-            runBlocking { withTimeoutOrNull(INTERACTIVE_TIMEOUT_MS + 5_000L) { solveOnMainThread(url, host) } }
+            // One WebView at a time for the whole app: on low-memory TV sticks two Chromium
+            // instances started together (two providers challenged in the same search)
+            // push the device into memory pressure and the UI stops responding.
+            runBlocking {
+                solveMutex.withLock {
+                    withTimeoutOrNull(INTERACTIVE_TIMEOUT_MS + 5_000L) { solveOnMainThread(url, host) }
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Challenge solve failed for $host: ${e.message}")
             null
@@ -178,6 +189,7 @@ class CloudflareChallengeSolver(private val context: Context) {
         // until Back is pressed.
         var focusBeforeReveal: View? = null
         var revealed = false
+        var rendererGone = false
         try {
             cookieManager.setAcceptThirdPartyCookies(webView, true)
             webView.settings.apply {
@@ -185,7 +197,16 @@ class CloudflareChallengeSolver(private val context: Context) {
                 domStorageEnabled = true
                 userAgentString = webViewUserAgent
             }
-            webView.webViewClient = WebViewClient()
+            webView.webViewClient = object : WebViewClient() {
+                // The system kills the page's renderer process when memory runs out. Left
+                // unhandled that takes the whole app down, or leaves a dead page holding
+                // the remote's focus until the timeout: end the check instead.
+                override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                    Log.w(TAG, "WebView renderer gone during the challenge for $host (crashed=${detail?.didCrash()})")
+                    rendererGone = true
+                    return true
+                }
+            }
             if (overlay != null) container.addView(overlay.root)
             webView.loadUrl(url)
 
@@ -193,6 +214,7 @@ class CloudflareChallengeSolver(private val context: Context) {
             val timeoutMs = if (overlay != null) INTERACTIVE_TIMEOUT_MS else SOLVE_TIMEOUT_MS
             while (System.currentTimeMillis() - startedAt < timeoutMs) {
                 delay(COOKIE_POLL_INTERVAL_MS)
+                if (rendererGone) return@withContext null
                 if (overlay != null && overlay.cursorLayer.cancelled) {
                     Log.i(TAG, "Challenge for $host cancelled by the user")
                     return@withContext null
