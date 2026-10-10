@@ -3,6 +3,12 @@ package com.nuvio.tv.core.iptv
 import com.nuvio.tv.data.local.IptvPreferencesDataStore
 import com.nuvio.tv.domain.model.EpgProgramme
 import com.nuvio.tv.domain.model.IptvChannel
+import com.nuvio.tv.domain.model.IptvPlaylist
+import com.nuvio.tv.domain.model.IptvPlaylistType
+import com.nuvio.tv.domain.model.IptvSeriesEpisode
+import com.nuvio.tv.domain.model.IptvVodCategory
+import com.nuvio.tv.domain.model.IptvVodItem
+import com.nuvio.tv.domain.model.IptvVodKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -26,15 +32,35 @@ class IptvRepository @Inject constructor(
 
     suspend fun getChannels(forceRefresh: Boolean = false): Result<List<IptvChannel>> = withContext(Dispatchers.IO) {
         val worldSource = preferences.worldSource.first()
-        val url = if (worldSource) {
-            worldPlaylistUrl(preferences.worldCountry.first())
-        } else {
-            preferences.playlistUrl.first()
+        val playlist = if (worldSource) null else getActivePlaylist()
+        val url = when {
+            worldSource -> worldPlaylistUrl(preferences.worldCountry.first())
+            // The key identifies the account, so switching playlist never serves another's cache.
+            playlist?.type == IptvPlaylistType.XTREAM -> "xtream:${playlist.id}:${playlist.url}:${playlist.username}"
+            else -> playlist?.url.orEmpty()
         }
         if (url.isBlank()) return@withContext Result.failure(IllegalStateException("no_playlist_url"))
         val cached = cachedChannels
         if (!forceRefresh && cached != null && cachedPlaylistUrl == url) {
             return@withContext Result.success(cached)
+        }
+        if (playlist?.type == IptvPlaylistType.XTREAM) {
+            return@withContext try {
+                val account = XtreamApi.parseAccount(fetchText(XtreamApi.apiUrl(playlist)))
+                    ?: return@withContext Result.failure(IllegalStateException("xtream_login_failed"))
+                val categories = XtreamApi.parseCategories(fetchText(XtreamApi.apiUrl(playlist, "get_live_categories")))
+                val channels = XtreamApi.parseLiveStreams(
+                    fetchText(XtreamApi.apiUrl(playlist, "get_live_streams")),
+                    playlist,
+                    categories,
+                    account.liveExtension
+                )
+                cachedChannels = channels
+                cachedPlaylistUrl = url
+                Result.success(channels)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
         try {
             val request = Request.Builder().url(url).build()
@@ -107,6 +133,102 @@ class IptvRepository @Inject constructor(
         preferences.setLastChannelUrl(url)
     }
 
+    // --- Playlists ---------------------------------------------------------------------
+
+    suspend fun getPlaylists(): List<IptvPlaylist> = preferences.getPlaylists()
+
+    /** The playlist in use: the one the user picked, or the first saved one. */
+    suspend fun getActivePlaylist(): IptvPlaylist? {
+        val playlists = preferences.getPlaylists()
+        val activeId = preferences.getActivePlaylistId()
+        return playlists.firstOrNull { it.id == activeId } ?: playlists.firstOrNull()
+    }
+
+    suspend fun setActivePlaylist(id: String) = preferences.setActivePlaylistId(id)
+
+    suspend fun addPlaylist(playlist: IptvPlaylist) {
+        preferences.addPlaylist(playlist)
+        preferences.setActivePlaylistId(playlist.id)
+    }
+
+    suspend fun removePlaylist(id: String) = preferences.removePlaylist(id)
+
+    /** Checks an Xtream account before it is saved. */
+    suspend fun verifyXtreamAccount(playlist: IptvPlaylist): Boolean = withContext(Dispatchers.IO) {
+        runCatching { XtreamApi.parseAccount(fetchText(XtreamApi.apiUrl(playlist))) != null }.getOrDefault(false)
+    }
+
+    // --- Movies and series (Xtream accounts) ---------------------------------------------
+
+    private class VodCache(
+        val key: String,
+        val categories: List<IptvVodCategory>,
+        val items: List<IptvVodItem>
+    )
+
+    private val vodCaches = mutableMapOf<IptvVodKind, VodCache>()
+
+    /** Categories and titles of the active Xtream account, cached for the session. */
+    suspend fun getVod(
+        kind: IptvVodKind,
+        forceRefresh: Boolean = false
+    ): Result<Pair<List<IptvVodCategory>, List<IptvVodItem>>> = withContext(Dispatchers.IO) {
+        val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }
+            ?: return@withContext Result.failure(IllegalStateException("not_xtream"))
+        val key = "${playlist.id}:${playlist.url}:${playlist.username}"
+        val cached = vodCaches[kind]
+        if (!forceRefresh && cached != null && cached.key == key) {
+            return@withContext Result.success(cached.categories to cached.items)
+        }
+        try {
+            val (categoriesAction, itemsAction) = when (kind) {
+                IptvVodKind.MOVIE -> "get_vod_categories" to "get_vod_streams"
+                IptvVodKind.SERIES -> "get_series_categories" to "get_series"
+            }
+            val categories = XtreamApi.parseCategories(fetchText(XtreamApi.apiUrl(playlist, categoriesAction)))
+            val body = fetchText(XtreamApi.apiUrl(playlist, itemsAction))
+            val items = if (kind == IptvVodKind.MOVIE) XtreamApi.parseMovies(body) else XtreamApi.parseSeries(body)
+            vodCaches[kind] = VodCache(key, categories, items)
+            Result.success(categories to items)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getSeriesEpisodes(series: IptvVodItem): Result<List<IptvSeriesEpisode>> = withContext(Dispatchers.IO) {
+        val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }
+            ?: return@withContext Result.failure(IllegalStateException("not_xtream"))
+        runCatching {
+            XtreamApi.parseSeriesEpisodes(
+                fetchText(XtreamApi.apiUrl(playlist, "get_series_info", mapOf("series_id" to series.id)))
+            )
+        }
+    }
+
+    suspend fun movieUrl(item: IptvVodItem): String? =
+        getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }?.let { XtreamApi.movieUrl(it, item) }
+
+    suspend fun episodeUrl(episode: IptvSeriesEpisode): String? =
+        getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }?.let { XtreamApi.episodeUrl(it, episode) }
+
+    // Account API calls fail fast: a mistyped server address must come back as an error in
+    // a few seconds, not leave the "checking" dialog spinning for a minute.
+    private val apiClient: OkHttpClient by lazy {
+        httpClient.newBuilder()
+            .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(45, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
+    private fun fetchText(url: String): String {
+        val request = Request.Builder().url(url).build()
+        apiClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+            return response.body?.string() ?: throw IOException("empty_response")
+        }
+    }
+
     suspend fun getFavoriteChannelUrls(): Set<String> = preferences.favoriteChannelUrls.first()
 
     suspend fun toggleFavoriteChannel(url: String): Set<String> = preferences.toggleFavoriteChannel(url)
@@ -117,7 +239,14 @@ class IptvRepository @Inject constructor(
 
     suspend fun getProgrammesByChannel(forceRefresh: Boolean = false): Map<String, List<EpgProgramme>> =
         withContext(Dispatchers.IO) {
-            val url = preferences.epgUrl.first()
+            // The world source has no guide of its own; it keeps using the personal one.
+            val playlist = getActivePlaylist()
+            val url = when {
+                playlist == null -> preferences.epgUrl.first()
+                playlist.epgUrl.isNotBlank() -> playlist.epgUrl
+                playlist.type == IptvPlaylistType.XTREAM && !preferences.worldSource.first() -> XtreamApi.xmltvUrl(playlist)
+                else -> ""
+            }
             if (url.isBlank()) return@withContext emptyMap()
             val cached = cachedProgrammes
             if (!forceRefresh && cached != null && cachedEpgUrl == url) {

@@ -9,6 +9,12 @@ import com.nuvio.tv.core.iptv.WorldCountry
 import kotlinx.coroutines.flow.first
 import com.nuvio.tv.domain.model.EpgProgramme
 import com.nuvio.tv.domain.model.IptvChannel
+import com.nuvio.tv.domain.model.IptvPlaylist
+import com.nuvio.tv.domain.model.IptvPlaylistType
+import com.nuvio.tv.domain.model.IptvSeriesEpisode
+import com.nuvio.tv.domain.model.IptvVodCategory
+import com.nuvio.tv.domain.model.IptvVodItem
+import com.nuvio.tv.domain.model.IptvVodKind
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,7 +28,9 @@ private const val PREVIEW_FOCUS_DELAY_MS = 900L
 data class IptvPlaybackRequest(
     val streamUrl: String,
     val headers: Map<String, String>?,
-    val title: String
+    val title: String,
+    /** "channel" for live TV (enables zapping in the player), "movie" for films and episodes. */
+    val contentType: String = "channel"
 )
 
 data class IptvUiState(
@@ -47,8 +55,46 @@ data class IptvUiState(
     /** Stream URLs of the channels watched most recently, newest first. */
     val recentUrls: List<String> = emptyList(),
     /** Channel shown in the preview pane: follows the focused row after a short pause. */
-    val previewChannel: IptvChannel? = null
+    val previewChannel: IptvChannel? = null,
+    val playlists: List<IptvPlaylist> = emptyList(),
+    val activePlaylistId: String? = null,
+    val showPlaylists: Boolean = false,
+    val showAddPlaylist: Boolean = false,
+    val addPlaylistBusy: Boolean = false,
+    /** The Xtream account just entered was rejected by the server. */
+    val addPlaylistRejected: Boolean = false,
+    val section: IptvSection = IptvSection.LIVE,
+    val vodLoading: Boolean = false,
+    val vodError: Boolean = false,
+    val vodCategories: List<IptvVodCategory> = emptyList(),
+    val vodItems: List<IptvVodItem> = emptyList(),
+    val selectedVodCategoryId: String = VOD_CATEGORY_RECENT,
+    /** Series whose episode list is open. */
+    val seriesDetail: IptvVodItem? = null,
+    val seriesEpisodes: List<IptvSeriesEpisode> = emptyList(),
+    val seriesLoading: Boolean = false
 ) {
+    val activePlaylist: IptvPlaylist?
+        get() = playlists.firstOrNull { it.id == activePlaylistId } ?: playlists.firstOrNull()
+
+    /** Movies and series exist only for an Xtream account, and not in the world source. */
+    val hasVodSections: Boolean
+        get() = !worldSource && activePlaylist?.type == IptvPlaylistType.XTREAM
+
+    val visibleVodItems: List<IptvVodItem>
+        get() {
+            if (searchQuery.isNotBlank()) {
+                // Searching looks through the whole section, not just the open category.
+                val q = searchQuery.trim()
+                return vodItems.filter { it.name.contains(q, ignoreCase = true) }
+            }
+            return when (selectedVodCategoryId) {
+                VOD_CATEGORY_RECENT -> vodItems.sortedByDescending { it.addedEpochSeconds }.take(MAX_RECENT_VOD)
+                VOD_CATEGORY_ALL -> vodItems
+                else -> vodItems.filter { it.categoryId == selectedVodCategoryId }
+            }
+        }
+
     val visibleChannels: List<IptvChannel>
         get() {
             var list = when (selectedTab) {
@@ -88,6 +134,12 @@ enum class IptvError { NOT_CONFIGURED, LOAD_FAILED }
 
 enum class IptvTab { ALL, GROUPS, FAVORITES, RECENT }
 
+enum class IptvSection { LIVE, MOVIES, SERIES }
+
+const val VOD_CATEGORY_RECENT = "__recent"
+const val VOD_CATEGORY_ALL = "__all"
+private const val MAX_RECENT_VOD = 60
+
 @HiltViewModel
 class IptvViewModel @Inject constructor(
     private val repository: IptvRepository
@@ -100,8 +152,17 @@ class IptvViewModel @Inject constructor(
         viewModelScope.launch {
             val worldSource = repository.worldSource.first()
             val worldCountry = repository.worldCountry.first()
+            val playlists = repository.getPlaylists()
+            val activePlaylistId = repository.getActivePlaylist()?.id
             _uiState.update {
-                it.copy(isLoading = true, error = null, worldSource = worldSource, worldCountryCode = worldCountry)
+                it.copy(
+                    isLoading = true,
+                    error = null,
+                    worldSource = worldSource,
+                    worldCountryCode = worldCountry,
+                    playlists = playlists,
+                    activePlaylistId = activePlaylistId
+                )
             }
             if (worldSource) loadWorldCountries()
             val result = repository.getChannels(forceRefresh)
@@ -191,6 +252,173 @@ class IptvViewModel @Inject constructor(
 
     fun selectGroup(group: String?) {
         _uiState.update { it.copy(selectedGroup = group) }
+    }
+
+    // --- Playlists ---------------------------------------------------------------------
+
+    fun openPlaylists() {
+        _uiState.update { it.copy(showPlaylists = true) }
+    }
+
+    fun dismissPlaylists() {
+        _uiState.update { it.copy(showPlaylists = false) }
+    }
+
+    fun openAddPlaylist() {
+        _uiState.update { it.copy(showPlaylists = false, showAddPlaylist = true, addPlaylistRejected = false) }
+    }
+
+    fun dismissAddPlaylist() {
+        _uiState.update { it.copy(showAddPlaylist = false, addPlaylistBusy = false, addPlaylistRejected = false) }
+    }
+
+    fun selectPlaylist(id: String) {
+        viewModelScope.launch {
+            repository.setActivePlaylist(id)
+            if (_uiState.value.worldSource) repository.setWorldSource(false)
+            resetForNewSource()
+            load()
+        }
+    }
+
+    fun deletePlaylist(id: String) {
+        viewModelScope.launch {
+            repository.removePlaylist(id)
+            resetForNewSource()
+            load()
+        }
+    }
+
+    fun addM3uPlaylist(name: String, url: String, epgUrl: String) {
+        if (url.isBlank()) return
+        savePlaylist(
+            IptvPlaylist(
+                id = newPlaylistId(),
+                name = name.trim().ifEmpty { hostOf(url) },
+                type = IptvPlaylistType.M3U,
+                url = url.trim(),
+                epgUrl = epgUrl.trim()
+            ),
+            verify = false
+        )
+    }
+
+    fun addXtreamPlaylist(name: String, server: String, username: String, password: String) {
+        if (server.isBlank() || username.isBlank() || password.isBlank()) return
+        savePlaylist(
+            IptvPlaylist(
+                id = newPlaylistId(),
+                name = name.trim().ifEmpty { hostOf(server) },
+                type = IptvPlaylistType.XTREAM,
+                url = server.trim(),
+                username = username.trim(),
+                password = password
+            ),
+            verify = true
+        )
+    }
+
+    private fun savePlaylist(playlist: IptvPlaylist, verify: Boolean) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(addPlaylistBusy = true, addPlaylistRejected = false) }
+            // An Xtream account is checked first, so a typo is reported in the dialog
+            // instead of leaving a playlist that never loads.
+            if (verify && !repository.verifyXtreamAccount(playlist)) {
+                _uiState.update { it.copy(addPlaylistBusy = false, addPlaylistRejected = true) }
+                return@launch
+            }
+            repository.addPlaylist(playlist)
+            if (_uiState.value.worldSource) repository.setWorldSource(false)
+            _uiState.update { it.copy(showAddPlaylist = false, addPlaylistBusy = false) }
+            resetForNewSource()
+            load()
+        }
+    }
+
+    private fun resetForNewSource() {
+        _uiState.update {
+            it.copy(
+                showPlaylists = false,
+                section = IptvSection.LIVE,
+                selectedTab = IptvTab.ALL,
+                selectedGroup = null,
+                searchQuery = "",
+                previewChannel = null,
+                vodCategories = emptyList(),
+                vodItems = emptyList(),
+                selectedVodCategoryId = VOD_CATEGORY_RECENT,
+                seriesDetail = null
+            )
+        }
+    }
+
+    private fun newPlaylistId(): String = java.util.UUID.randomUUID().toString()
+
+    private fun hostOf(url: String): String =
+        runCatching { java.net.URI(com.nuvio.tv.core.iptv.XtreamApi.baseUrl(url)).host }.getOrNull().orEmpty().ifEmpty { url.trim() }
+
+    // --- Movies and series (Xtream) ------------------------------------------------------
+
+    fun selectSection(section: IptvSection) {
+        if (_uiState.value.section == section) return
+        _uiState.update {
+            it.copy(section = section, searchQuery = "", selectedVodCategoryId = VOD_CATEGORY_RECENT, seriesDetail = null)
+        }
+        if (section != IptvSection.LIVE) loadVod()
+    }
+
+    fun loadVod(forceRefresh: Boolean = false) {
+        val kind = when (_uiState.value.section) {
+            IptvSection.MOVIES -> IptvVodKind.MOVIE
+            IptvSection.SERIES -> IptvVodKind.SERIES
+            IptvSection.LIVE -> return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(vodLoading = true, vodError = false, vodItems = emptyList(), vodCategories = emptyList()) }
+            repository.getVod(kind, forceRefresh).fold(
+                onSuccess = { (categories, items) ->
+                    _uiState.update { it.copy(vodLoading = false, vodCategories = categories, vodItems = items) }
+                },
+                onFailure = { _uiState.update { it.copy(vodLoading = false, vodError = true) } }
+            )
+        }
+    }
+
+    fun selectVodCategory(id: String) {
+        _uiState.update { it.copy(selectedVodCategoryId = id) }
+    }
+
+    /** A movie starts playing; a series opens its episode list. */
+    fun openVodItem(item: IptvVodItem) {
+        viewModelScope.launch {
+            if (item.kind == IptvVodKind.MOVIE) {
+                val url = repository.movieUrl(item) ?: return@launch
+                _uiState.update {
+                    it.copy(playbackRequest = IptvPlaybackRequest(url, null, item.name, contentType = "movie"))
+                }
+            } else {
+                _uiState.update { it.copy(seriesDetail = item, seriesEpisodes = emptyList(), seriesLoading = true) }
+                val episodes = repository.getSeriesEpisodes(item).getOrDefault(emptyList())
+                _uiState.update {
+                    if (it.seriesDetail?.id == item.id) it.copy(seriesEpisodes = episodes, seriesLoading = false) else it
+                }
+            }
+        }
+    }
+
+    fun dismissSeries() {
+        _uiState.update { it.copy(seriesDetail = null, seriesEpisodes = emptyList(), seriesLoading = false) }
+    }
+
+    fun playEpisode(episode: IptvSeriesEpisode) {
+        val series = _uiState.value.seriesDetail ?: return
+        viewModelScope.launch {
+            val url = repository.episodeUrl(episode) ?: return@launch
+            val label = "${series.name} S${episode.season}E${episode.episode}"
+            _uiState.update {
+                it.copy(playbackRequest = IptvPlaybackRequest(url, null, label, contentType = "movie"))
+            }
+        }
     }
 
     fun selectTab(tab: IptvTab) {

@@ -296,7 +296,7 @@ private fun IptvChannelList(
 
 /** A focusable list row: highlighted background and focus ring like the rest of the app. */
 @Composable
-private fun IptvListRow(
+internal fun IptvListRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onLongClick: () -> Unit = {},
@@ -343,12 +343,17 @@ private fun IptvChannelRow(
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
     IptvListRow(
         onClick = onClick,
         onLongClick = onLongClick,
         onFocused = onFocused,
         accent = isPreviewed,
-        modifier = modifier
+        modifier = modifier.weight(1f)
     ) {
         Text(
             text = number.toString(),
@@ -387,14 +392,40 @@ private fun IptvChannelRow(
                 )
             }
         }
-        if (isFavorite) {
-            Text(text = "★", style = MaterialTheme.typography.bodyLarge, color = NuvioTheme.colors.Primary)
-        }
+    }
+    // Its own stop for the remote (D-pad right from the channel): a long press on OK is
+    // not something a TV user discovers, and not every remote reports it.
+    IptvStarButton(isFavorite = isFavorite, onClick = onLongClick, onFocused = onFocused)
     }
 }
 
 @Composable
-private fun IptvPaneMessage(text: String) {
+private fun IptvStarButton(isFavorite: Boolean, onClick: () -> Unit, onFocused: () -> Unit) {
+    var isFocused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(NuvioTheme.radii.md)
+    Box(
+        modifier = Modifier
+            .size(width = 52.dp, height = 60.dp)
+            .clip(shape)
+            .background(if (isFocused) NuvioTheme.colors.Surface else Color.Transparent)
+            .then(if (isFocused) Modifier.border(NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs), shape) else Modifier)
+            .onFocusChanged {
+                isFocused = it.isFocused
+                if (it.isFocused) onFocused()
+            }
+            .combinedClickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = if (isFavorite) "★" else "☆",
+            style = MaterialTheme.typography.titleMedium,
+            color = if (isFavorite) NuvioTheme.colors.Primary else NuvioTheme.colors.TextTertiary
+        )
+    }
+}
+
+@Composable
+internal fun IptvPaneMessage(text: String) {
     Box(
         modifier = Modifier
             .fillMaxSize()

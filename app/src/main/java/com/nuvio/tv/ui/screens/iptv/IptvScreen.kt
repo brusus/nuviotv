@@ -138,10 +138,14 @@ fun IptvScreen(
                     .padding(horizontal = NuvioTheme.spacing.xl)
                     .padding(bottom = NuvioTheme.spacing.sm)
             ) {
+                // The playlist in use; pressing it again opens the saved playlists.
                 GroupChip(
-                    label = stringResource(R.string.iptv_source_personal),
+                    label = (uiState.activePlaylist?.displayName()
+                        ?: stringResource(R.string.iptv_source_personal)) + " ▾",
                     selected = !uiState.worldSource,
-                    onClick = { viewModel.selectWorldSource(false) }
+                    onClick = {
+                        if (uiState.worldSource) viewModel.selectWorldSource(false) else viewModel.openPlaylists()
+                    }
                 )
                 GroupChip(
                     label = buildString {
@@ -156,14 +160,34 @@ fun IptvScreen(
                     selected = uiState.worldSource,
                     onClick = { viewModel.selectWorldSource(true) }
                 )
+                // An Xtream account also carries movies and series.
+                if (uiState.hasVodSections) {
+                    Spacer(modifier = Modifier.padding(start = NuvioTheme.spacing.lg))
+                    IptvSection.entries.forEach { section ->
+                        GroupChip(
+                            label = stringResource(
+                                when (section) {
+                                    IptvSection.LIVE -> R.string.iptv_section_live
+                                    IptvSection.MOVIES -> R.string.iptv_section_movies
+                                    IptvSection.SERIES -> R.string.iptv_section_series
+                                }
+                            ),
+                            selected = uiState.section == section,
+                            onClick = { viewModel.selectSection(section) }
+                        )
+                    }
+                }
             }
 
             when {
+                uiState.hasVodSections && uiState.section != IptvSection.LIVE -> {
+                    IptvVodPane(uiState = uiState, viewModel = viewModel)
+                }
                 uiState.error == IptvError.NOT_CONFIGURED -> {
                     IptvMessage(
                         text = stringResource(R.string.iptv_error_not_configured),
-                        onClick = onOpenSettings,
-                        actionLabel = stringResource(R.string.iptv_open_settings)
+                        onClick = viewModel::openAddPlaylist,
+                        actionLabel = stringResource(R.string.iptv_playlist_add)
                     )
                 }
                 uiState.error == IptvError.LOAD_FAILED -> {
@@ -183,6 +207,26 @@ fun IptvScreen(
                 }
             }
         }
+    }
+
+    if (uiState.showPlaylists) {
+        IptvPlaylistsDialog(
+            playlists = uiState.playlists,
+            activeId = uiState.activePlaylist?.id,
+            onSelect = viewModel::selectPlaylist,
+            onDelete = viewModel::deletePlaylist,
+            onAdd = viewModel::openAddPlaylist,
+            onDismiss = viewModel::dismissPlaylists
+        )
+    }
+    if (uiState.showAddPlaylist) {
+        IptvAddPlaylistDialog(
+            busy = uiState.addPlaylistBusy,
+            rejected = uiState.addPlaylistRejected,
+            onAddM3u = viewModel::addM3uPlaylist,
+            onAddXtream = viewModel::addXtreamPlaylist,
+            onDismiss = viewModel::dismissAddPlaylist
+        )
     }
 
     if (uiState.showCountryPicker && uiState.worldCountries.isNotEmpty()) {

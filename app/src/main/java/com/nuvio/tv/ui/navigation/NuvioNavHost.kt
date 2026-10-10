@@ -1157,7 +1157,7 @@ fun NuvioNavHost(
                             streamUrl = request.streamUrl,
                             title = request.title,
                             headers = request.headers,
-                            contentType = "channel",
+                            contentType = request.contentType,
                             contentName = request.title,
                             addonName = "IPTV",
                             returnToHomeOnBack = true
