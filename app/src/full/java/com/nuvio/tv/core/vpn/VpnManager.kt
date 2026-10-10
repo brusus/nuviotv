@@ -43,6 +43,8 @@ private const val PUBLIC_IP_URL = "https://api.ipify.org?format=text"
 // working config+network should ever need.
 private const val HANDSHAKE_TIMEOUT_MS = 8_000L
 private const val HANDSHAKE_POLL_INTERVAL_MS = 250L
+private val AUTO_CONNECT_RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 30_000L)
+private val RETRYABLE_ERRORS = setOf("handshake_timeout", "connect_failed")
 // GoBackend's own setState(UP) on top of an already-UP tunnel tears the old one down via
 // VpnService.stopSelf(), which only *schedules* onDestroy on the main thread - it does not
 // block until the service is actually gone. Bringing the new config up immediately after
@@ -78,7 +80,13 @@ class VpnManager @Inject constructor(
             // connect()/retryAfterPermission() confirm a real handshake and set CONNECTED
             // themselves. DOWN is unambiguous either way.
             when (newState) {
-                Tunnel.State.DOWN -> _connectionState.value = VpnConnectionState.DISCONNECTED
+                Tunnel.State.DOWN -> {
+                    _connectionState.value = VpnConnectionState.DISCONNECTED
+                    // Also when the system takes the tunnel down by itself (another VPN, revoked
+                    // permission): pooled connections on it are dead. Off the caller's
+                    // thread: closing sockets must not run on the main thread.
+                    scope.launch { dropPooledConnections() }
+                }
                 Tunnel.State.TOGGLE -> _connectionState.value = VpnConnectionState.CONNECTING
                 Tunnel.State.UP -> Unit
             }
@@ -118,9 +126,9 @@ class VpnManager @Inject constructor(
     private var appliedRawConfig: String? = null
 
     init {
-        // The config is per profile but the tunnel is one per app: when the active profile
-        // (or its saved config) changes while connected, the tunnel must follow - otherwise
-        // it kept running on the previous profile's server until the next manual toggle.
+        // When the saved config changes while connected (edited in the settings, or sent
+        // from the phone), the tunnel must follow - otherwise it kept running on the
+        // previous server until the next manual toggle.
         scope.launch {
             preferences.config.distinctUntilChanged().collect { rawConfig ->
                 if (_connectionState.value != VpnConnectionState.CONNECTED) return@collect
@@ -132,12 +140,26 @@ class VpnManager @Inject constructor(
                         runCatching { backend.setState(tunnel, Tunnel.State.DOWN, null) }
                         appliedRawConfig = null
                         _connectionState.value = VpnConnectionState.DISCONNECTED
-                        ipCheckClient.connectionPool.evictAll()
+                        dropPooledConnections()
                     }
                 } else {
                     connect()
                 }
             }
+        }
+    }
+
+    /**
+     * Idle keep-alive connections were opened on the route in use before the tunnel changed
+     * state. Left in the pool they are reused for minutes: after connecting, requests keep
+     * leaving outside the tunnel with the real address; after disconnecting, they hang on a
+     * dead interface. Dropping them makes the next request open on the current route.
+     * Connections carrying a stream right now are not touched.
+     */
+    private fun dropPooledConnections() {
+        ipCheckClient.connectionPool.evictAll()
+        runCatching {
+            com.nuvio.tv.ui.screens.player.NuvioExoPlayerPerformanceHelper.sharedConnectionPool.evictAll()
         }
     }
 
@@ -209,7 +231,7 @@ class VpnManager @Inject constructor(
             }
             _connectionState.value = VpnConnectionState.DISCONNECTED
             // Any connection pooled while routed through the tunnel is now on a dead route.
-            ipCheckClient.connectionPool.evictAll()
+            dropPooledConnections()
         }
     }
 
@@ -224,7 +246,7 @@ class VpnManager @Inject constructor(
             // The IP-check client may hold a connection pooled from before this tunnel came
             // up (e.g. the baseline check VpnSettingsViewModel does just before connecting) -
             // that socket is on a now-dead route and would otherwise fail or hang the next call.
-            ipCheckClient.connectionPool.evictAll()
+            dropPooledConnections()
             _connectionState.value = VpnConnectionState.CONNECTED
         } else {
             Log.w(TAG, "No WireGuard handshake within ${HANDSHAKE_TIMEOUT_MS}ms - reverting")
@@ -267,6 +289,21 @@ class VpnManager @Inject constructor(
             if (preferences.config.first().isBlank()) return@launch
             Log.d(TAG, "Auto-connecting VPN on startup (last session was connected)")
             connect()
+            // Right after the TV boots the network is often not ready yet: the first
+            // handshake times out and the app would run the whole session without the VPN
+            // the user left on. Try again a few times before giving up.
+            for (delayMs in AUTO_CONNECT_RETRY_DELAYS_MS) {
+                // connect() only queues the attempt: wait for it to finish before judging it.
+                operationJob?.join()
+                val failedToReachPeer = connectionState.value == VpnConnectionState.ERROR &&
+                    _errorMessage.value in RETRYABLE_ERRORS
+                if (!failedToReachPeer) break
+                delay(delayMs)
+                // The user may have turned the VPN off, or on again, in the meantime.
+                if (!preferences.autoConnect.first() || connectionState.value != VpnConnectionState.ERROR) break
+                Log.d(TAG, "Retrying VPN auto-connect")
+                connect()
+            }
         }
     }
 
