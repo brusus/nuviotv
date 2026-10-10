@@ -107,6 +107,14 @@ class IptvRepository @Inject constructor(
         preferences.setLastChannelUrl(url)
     }
 
+    suspend fun getFavoriteChannelUrls(): Set<String> = preferences.favoriteChannelUrls.first()
+
+    suspend fun toggleFavoriteChannel(url: String): Set<String> = preferences.toggleFavoriteChannel(url)
+
+    suspend fun getRecentChannelUrls(): List<String> = preferences.recentChannelUrls.first()
+
+    suspend fun addRecentChannel(url: String): List<String> = preferences.addRecentChannel(url)
+
     suspend fun getProgrammesByChannel(forceRefresh: Boolean = false): Map<String, List<EpgProgramme>> =
         withContext(Dispatchers.IO) {
             val url = preferences.epgUrl.first()

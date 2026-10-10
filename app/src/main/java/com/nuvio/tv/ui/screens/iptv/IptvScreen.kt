@@ -36,6 +36,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,8 +48,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -57,6 +67,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.view.KeyEvent as AndroidKeyEvent
+import androidx.tv.material3.Border
+import androidx.tv.material3.ButtonDefaults
+import androidx.tv.material3.ClickableSurfaceDefaults
+import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
@@ -65,8 +80,10 @@ import coil3.request.crossfade
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.EpgProgramme
 import com.nuvio.tv.domain.model.IptvChannel
+import com.nuvio.tv.ui.components.Button
 import com.nuvio.tv.ui.components.LoadingIndicator
 import com.nuvio.tv.ui.components.NuvioDialog
+import com.nuvio.tv.ui.components.Surface
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -78,7 +95,6 @@ fun IptvScreen(
     onOpenSettings: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    var guideChannel by remember { mutableStateOf<IptvChannel?>(null) }
 
     LaunchedEffect(Unit) {
         viewModel.load()
@@ -163,62 +179,7 @@ fun IptvScreen(
                     }
                 }
                 else -> {
-                    if (uiState.groups.size > 1) {
-                        GroupFilterRow(
-                            groups = uiState.groups,
-                            selectedGroup = uiState.selectedGroup,
-                            onSelect = viewModel::selectGroup
-                        )
-                    }
-                    val visibleChannels = uiState.visibleChannels
-                    val gridState = rememberLazyGridState()
-                    val lastChannelFocus = remember { FocusRequester() }
-                    val lastChannelIndex = remember(visibleChannels, uiState.lastChannelUrl) {
-                        visibleChannels.indexOfFirst { it.streamUrl == uiState.lastChannelUrl }
-                    }
-                    // Reopen on the last channel watched (also after zapping in the player):
-                    // scroll it into view first - a grid item must be composed to take focus.
-                    LaunchedEffect(lastChannelIndex) {
-                        android.util.Log.d("IptvScreen", "Restore last channel: index=$lastChannelIndex of ${visibleChannels.size}")
-                        if (lastChannelIndex >= 0) {
-                            gridState.scrollToItem(lastChannelIndex)
-                            withFrameNanos { }
-                            runCatching { lastChannelFocus.requestFocus() }
-                        }
-                    }
-                    LazyVerticalGrid(
-                        state = gridState,
-                        // Entering the grid from the sidebar (D-pad right) or coming back to
-                        // it lands on the last channel watched instead of the first tile.
-                        modifier = if (lastChannelIndex >= 0) {
-                            Modifier.fillMaxSize().focusRestorer(lastChannelFocus)
-                        } else {
-                            Modifier.fillMaxSize()
-                        },
-                        columns = GridCells.Adaptive(minSize = 180.dp),
-                        contentPadding = PaddingValues(
-                            horizontal = NuvioTheme.spacing.xl,
-                            vertical = NuvioTheme.spacing.lg
-                        ),
-                        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md),
-                        verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
-                    ) {
-                        // Index in the key: a playlist can list the same channel twice, and
-                        // duplicate keys crash the grid.
-                        itemsIndexed(visibleChannels, key = { index, channel -> "$index|${channel.id}|${channel.streamUrl}" }) { index, channel ->
-                            IptvChannelTile(
-                                channel = channel,
-                                nowPlaying = viewModel.nowPlayingTitle(channel),
-                                onClick = { viewModel.playChannel(channel) },
-                                onLongClick = { guideChannel = channel },
-                                modifier = if (index == lastChannelIndex) {
-                                    Modifier.focusRequester(lastChannelFocus)
-                                } else {
-                                    Modifier
-                                }
-                            )
-                        }
-                    }
+                    IptvTwoPane(uiState = uiState, viewModel = viewModel)
                 }
             }
         }
@@ -232,19 +193,10 @@ fun IptvScreen(
             onDismiss = viewModel::dismissCountryPicker
         )
     }
-
-    val currentGuideChannel = guideChannel
-    if (currentGuideChannel != null) {
-        IptvGuideDialog(
-            channel = currentGuideChannel,
-            programmes = viewModel.upcomingProgrammes(currentGuideChannel),
-            onDismiss = { guideChannel = null }
-        )
-    }
 }
 
 @Composable
-private fun IptvMessage(text: String, actionLabel: String, onClick: () -> Unit) {
+internal fun IptvMessage(text: String, actionLabel: String, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -265,28 +217,138 @@ private fun IptvMessage(text: String, actionLabel: String, onClick: () -> Unit) 
     }
 }
 
+/**
+ * Channel search box. The filter itself lives in the ViewModel ([IptvUiState.searchQuery]);
+ * this only edits the query. Like the library search row, the text field takes focus only
+ * while editing, so the D-pad can leave it with up/down.
+ */
+@OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun GroupFilterRow(groups: List<String>, selectedGroup: String?, onSelect: (String?) -> Unit) {
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = NuvioTheme.spacing.xl),
-        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm),
-        modifier = Modifier.fillMaxWidth().padding(bottom = NuvioTheme.spacing.sm)
+internal fun IptvSearchRow(
+    query: String,
+    onQueryChange: (String) -> Unit
+) {
+    var editing by remember { mutableStateOf(false) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val fieldFocusRequester = remember { FocusRequester() }
+    val editorFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(editing) {
+        if (editing) {
+            editorFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = NuvioTheme.spacing.xl)
+            .padding(bottom = NuvioTheme.spacing.sm),
+        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        item {
-            GroupChip(
-                label = stringResource(R.string.iptv_all_groups),
-                selected = selectedGroup == null,
-                onClick = { onSelect(null) }
+        Surface(
+            onClick = { editing = true },
+            modifier = Modifier
+                .weight(1f)
+                .focusRequester(fieldFocusRequester),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = NuvioTheme.colors.BackgroundCard,
+                focusedContainerColor = NuvioTheme.colors.BackgroundCard
+            ),
+            border = ClickableSurfaceDefaults.border(
+                border = Border(
+                    border = BorderStroke(NuvioTheme.spacing.hairline, NuvioTheme.colors.Border),
+                    shape = RoundedCornerShape(NuvioTheme.radii.md)
+                ),
+                focusedBorder = Border(
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
+                    shape = RoundedCornerShape(NuvioTheme.radii.md)
+                )
+            ),
+            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(NuvioTheme.radii.md)),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+        ) {
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = NuvioTheme.spacing.lg, vertical = 14.dp)
+                    .focusRequester(editorFocusRequester)
+                    .focusProperties { canFocus = editing }
+                    .onFocusChanged {
+                        if (!it.isFocused && editing) {
+                            editing = false
+                            keyboardController?.hide()
+                        }
+                    }
+                    .onPreviewKeyEvent { event ->
+                        val native = event.nativeKeyEvent
+                        if (native.action != AndroidKeyEvent.ACTION_DOWN) {
+                            return@onPreviewKeyEvent false
+                        }
+                        val direction = when (native.keyCode) {
+                            AndroidKeyEvent.KEYCODE_DPAD_UP -> FocusDirection.Up
+                            AndroidKeyEvent.KEYCODE_DPAD_DOWN -> FocusDirection.Down
+                            else -> return@onPreviewKeyEvent false
+                        }
+                        editing = false
+                        keyboardController?.hide()
+                        focusManager.moveFocus(direction)
+                        true
+                    },
+                readOnly = !editing,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        editing = false
+                        keyboardController?.hide()
+                        fieldFocusRequester.requestFocus()
+                    }
+                ),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = NuvioTheme.colors.TextPrimary
+                ),
+                cursorBrush = SolidColor(
+                    if (editing) NuvioTheme.colors.FocusRing else Color.Transparent
+                ),
+                decorationBox = { innerTextField ->
+                    if (query.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.iptv_search_placeholder),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = NuvioTheme.colors.TextTertiary
+                        )
+                    }
+                    innerTextField()
+                }
             )
         }
-        items(groups) { group ->
-            GroupChip(label = group, selected = selectedGroup == group, onClick = { onSelect(group) })
+
+        if (query.isNotEmpty()) {
+            Button(
+                onClick = {
+                    onQueryChange("")
+                    editing = false
+                },
+                colors = ButtonDefaults.colors(
+                    containerColor = NuvioTheme.colors.BackgroundCard,
+                    contentColor = NuvioTheme.colors.TextPrimary
+                )
+            ) {
+                Text(stringResource(R.string.iptv_search_clear))
+            }
         }
     }
 }
 
+
 @Composable
-private fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
+internal fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
     var isFocused by remember { mutableStateOf(false) }
     val backgroundColor = when {
         isFocused -> NuvioTheme.colors.Primary
@@ -313,114 +375,4 @@ private fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun IptvChannelTile(
-    channel: IptvChannel,
-    nowPlaying: String?,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var isFocused by remember { mutableStateOf(false) }
-    val interactionSource = remember { MutableInteractionSource() }
 
-    val scale by animateFloatAsState(
-        targetValue = if (isFocused) 1.06f else 1f,
-        animationSpec = tween(150),
-        label = "iptvTileScale"
-    )
-    val borderWidth by animateDpAsState(
-        targetValue = if (isFocused) NuvioTheme.spacing.xxs else NuvioTheme.spacing.none,
-        animationSpec = tween(120),
-        label = "iptvTileBorder"
-    )
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(12.dp))
-            .background(NuvioTheme.colors.Surface)
-            .border(
-                border = if (isFocused) NuvioTheme.focusRing.border(borderWidth) else BorderStroke(borderWidth, Color.Transparent),
-                shape = RoundedCornerShape(12.dp)
-            )
-            .onFocusChanged { isFocused = it.isFocused }
-            .combinedClickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick,
-                onLongClick = onLongClick
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        if (channel.logoUrl != null) {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current).data(channel.logoUrl).crossfade(true).build(),
-                contentDescription = channel.name,
-                modifier = Modifier.fillMaxWidth(0.6f).aspectRatio(2f),
-                contentScale = ContentScale.Fit
-            )
-        }
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp)
-                .padding(bottom = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = channel.name,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (nowPlaying != null) {
-                Text(
-                    text = nowPlaying,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.8f),
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun IptvGuideDialog(channel: IptvChannel, programmes: List<EpgProgramme>, onDismiss: () -> Unit) {
-    NuvioDialog(onDismiss = onDismiss, title = channel.name, subtitle = null, width = 600.dp) {
-        Column(verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)) {
-            if (programmes.isEmpty()) {
-                Text(
-                    text = stringResource(R.string.iptv_no_guide_data),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = NuvioTheme.colors.TextSecondary
-                )
-            } else {
-                val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-                programmes.take(10).forEach { programme ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)) {
-                        Text(
-                            text = timeFormat.format(programme.startMillis),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = NuvioTheme.colors.Primary
-                        )
-                        Text(
-                            text = programme.title,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = NuvioTheme.colors.TextPrimary
-                        )
-                    }
-                }
-            }
-        }
-    }
-}

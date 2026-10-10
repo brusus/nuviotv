@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+private const val PREVIEW_FOCUS_DELAY_MS = 900L
+
 data class IptvPlaybackRequest(
     val streamUrl: String,
     val headers: Map<String, String>?,
@@ -38,13 +40,27 @@ data class IptvUiState(
     val worldSource: Boolean = false,
     val worldCountryCode: String = "it",
     val worldCountries: List<WorldCountry> = emptyList(),
-    val showCountryPicker: Boolean = false
+    val showCountryPicker: Boolean = false,
+    val selectedTab: IptvTab = IptvTab.ALL,
+    /** Stream URLs of the starred channels. */
+    val favoriteUrls: Set<String> = emptySet(),
+    /** Stream URLs of the channels watched most recently, newest first. */
+    val recentUrls: List<String> = emptyList(),
+    /** Channel shown in the preview pane: follows the focused row after a short pause. */
+    val previewChannel: IptvChannel? = null
 ) {
     val visibleChannels: List<IptvChannel>
         get() {
-            var list = channels
-            if (!selectedGroup.isNullOrBlank()) {
-                list = list.filter { it.groupTitle == selectedGroup }
+            var list = when (selectedTab) {
+                IptvTab.ALL -> channels
+                IptvTab.GROUPS ->
+                    if (selectedGroup.isNullOrBlank()) emptyList()
+                    else channels.filter { it.groupTitle == selectedGroup }
+                IptvTab.FAVORITES -> channels.filter { it.streamUrl in favoriteUrls }
+                IptvTab.RECENT -> {
+                    val byUrl = channels.associateBy { it.streamUrl }
+                    recentUrls.mapNotNull { byUrl[it] }
+                }
             }
             if (searchQuery.isNotBlank()) {
                 val q = searchQuery.trim()
@@ -52,9 +68,25 @@ data class IptvUiState(
             }
             return list
         }
+
+    /** Groups with their channel count, for the Groups tab; honours the search query. */
+    val visibleGroups: List<Pair<String, Int>>
+        get() {
+            val q = searchQuery.trim()
+            val counts = channels.groupingBy { it.groupTitle }.eachCount()
+            return groups
+                .filter { q.isEmpty() || it.contains(q, ignoreCase = true) }
+                .map { it to (counts[it] ?: 0) }
+        }
+
+    /** True while the Groups tab shows the list of groups rather than one group's channels. */
+    val showingGroupList: Boolean
+        get() = selectedTab == IptvTab.GROUPS && selectedGroup.isNullOrBlank()
 }
 
 enum class IptvError { NOT_CONFIGURED, LOAD_FAILED }
+
+enum class IptvTab { ALL, GROUPS, FAVORITES, RECENT }
 
 @HiltViewModel
 class IptvViewModel @Inject constructor(
@@ -80,13 +112,24 @@ class IptvViewModel @Inject constructor(
                     val zappedTo = IptvZapList.lastPlayedUrl
                     if (zappedTo != null) repository.setLastChannelUrl(zappedTo)
                     val lastChannel = zappedTo ?: repository.getLastChannelUrl()
+                    val recents = if (zappedTo != null) {
+                        repository.addRecentChannel(zappedTo)
+                    } else {
+                        repository.getRecentChannelUrls()
+                    }
+                    val favorites = repository.getFavoriteChannelUrls()
                     _uiState.update {
                         it.copy(
                             isLoading = false,
                             channels = channels,
                             groups = groups,
                             error = null,
-                            lastChannelUrl = lastChannel
+                            lastChannelUrl = lastChannel,
+                            favoriteUrls = favorites,
+                            recentUrls = recents,
+                            // Keep the preview on a channel of the list just loaded.
+                            previewChannel = it.previewChannel?.takeIf { p -> channels.any { c -> c.streamUrl == p.streamUrl } }
+                                ?: channels.firstOrNull { c -> c.streamUrl == lastChannel }
                         )
                     }
                     val programmes = repository.getProgrammesByChannel(forceRefresh)
@@ -150,6 +193,35 @@ class IptvViewModel @Inject constructor(
         _uiState.update { it.copy(selectedGroup = group) }
     }
 
+    fun selectTab(tab: IptvTab) {
+        _uiState.update {
+            // Entering Groups always starts from the list of groups.
+            it.copy(selectedTab = tab, selectedGroup = null)
+        }
+    }
+
+    fun toggleFavorite(channel: IptvChannel) {
+        viewModelScope.launch {
+            val favorites = repository.toggleFavoriteChannel(channel.streamUrl)
+            _uiState.update { it.copy(favoriteUrls = favorites) }
+        }
+    }
+
+    private var previewJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * The preview follows the focused row, but only once the selection rests on it: starting
+     * a stream for every row scrolled past would stall the list on low-end TV sticks.
+     */
+    fun onChannelFocused(channel: IptvChannel) {
+        if (_uiState.value.previewChannel?.streamUrl == channel.streamUrl) return
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(PREVIEW_FOCUS_DELAY_MS)
+            _uiState.update { it.copy(previewChannel = channel) }
+        }
+    }
+
     fun updateSearchQuery(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
     }
@@ -159,10 +231,16 @@ class IptvViewModel @Inject constructor(
         IptvZapList.set(_uiState.value.visibleChannels)
         IptvZapList.setProgrammes(_uiState.value.programmesByChannel)
         IptvZapList.markPlayed(channel.streamUrl)
-        viewModelScope.launch { repository.setLastChannelUrl(channel.streamUrl) }
+        previewJob?.cancel()
+        viewModelScope.launch {
+            repository.setLastChannelUrl(channel.streamUrl)
+            val recents = repository.addRecentChannel(channel.streamUrl)
+            _uiState.update { it.copy(recentUrls = recents) }
+        }
         _uiState.update {
             it.copy(
                 lastChannelUrl = channel.streamUrl,
+                previewChannel = channel,
                 playbackRequest = IptvPlaybackRequest(
                     streamUrl = channel.streamUrl,
                     headers = channel.headers,
