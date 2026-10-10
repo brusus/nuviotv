@@ -87,7 +87,8 @@ object M3uParser {
                                 groupTitle = attrs["group-title"]?.takeIf { it.isNotBlank() } ?: "Altro",
                                 streamUrl = streamUrl,
                                 epgId = attrs["tvg-id"]?.takeIf { it.isNotBlank() },
-                                headers = pendingHeaders?.toMap()
+                                headers = pendingHeaders?.toMap(),
+                                isRadio = attrs["radio"].equals("true", ignoreCase = true)
                             )
                         )
                     }

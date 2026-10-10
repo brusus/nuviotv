@@ -7,6 +7,7 @@ import com.nuvio.tv.domain.model.IptvPlaylist
 import com.nuvio.tv.domain.model.IptvPlaylistType
 import com.nuvio.tv.domain.model.IptvSeriesEpisode
 import com.nuvio.tv.domain.model.IptvVodCategory
+import com.nuvio.tv.domain.model.IptvVodDetails
 import com.nuvio.tv.domain.model.IptvVodItem
 import com.nuvio.tv.domain.model.IptvVodKind
 import kotlinx.coroutines.Dispatchers
@@ -46,15 +47,15 @@ class IptvRepository @Inject constructor(
         }
         if (playlist?.type == IptvPlaylistType.XTREAM) {
             return@withContext try {
-                val account = XtreamApi.parseAccount(fetchText(XtreamApi.apiUrl(playlist)))
+                val account = XtreamApi.parseAccount(fetchText(XtreamApi.apiUrl(playlist), playlist.userAgent))
                     ?: return@withContext Result.failure(IllegalStateException("xtream_login_failed"))
-                val categories = XtreamApi.parseCategories(fetchText(XtreamApi.apiUrl(playlist, "get_live_categories")))
+                val categories = XtreamApi.parseCategories(fetchText(XtreamApi.apiUrl(playlist, "get_live_categories"), playlist.userAgent))
                 val channels = XtreamApi.parseLiveStreams(
-                    fetchText(XtreamApi.apiUrl(playlist, "get_live_streams")),
+                    fetchText(XtreamApi.apiUrl(playlist, "get_live_streams"), playlist.userAgent),
                     playlist,
                     categories,
                     account.liveExtension
-                )
+                ).withUserAgent(playlist.userAgent)
                 cachedChannels = channels
                 cachedPlaylistUrl = url
                 Result.success(channels)
@@ -63,7 +64,7 @@ class IptvRepository @Inject constructor(
             }
         }
         try {
-            val request = Request.Builder().url(url).build()
+            val request = Request.Builder().url(url).withUserAgent(playlist?.userAgent.orEmpty()).build()
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("HTTP ${response.code}"))
@@ -76,7 +77,7 @@ class IptvRepository @Inject constructor(
                 val channels = if (worldSource) {
                     parsed.map { it.copy(groupTitle = it.groupTitle.substringBefore(';').ifBlank { it.groupTitle }) }
                 } else {
-                    parsed
+                    parsed.withUserAgent(playlist?.userAgent.orEmpty())
                 }
                 cachedChannels = channels
                 cachedPlaylistUrl = url
@@ -155,7 +156,7 @@ class IptvRepository @Inject constructor(
 
     /** Checks an Xtream account before it is saved. */
     suspend fun verifyXtreamAccount(playlist: IptvPlaylist): Boolean = withContext(Dispatchers.IO) {
-        runCatching { XtreamApi.parseAccount(fetchText(XtreamApi.apiUrl(playlist))) != null }.getOrDefault(false)
+        runCatching { XtreamApi.parseAccount(fetchText(XtreamApi.apiUrl(playlist), playlist.userAgent)) != null }.getOrDefault(false)
     }
 
     // --- Movies and series (Xtream accounts) ---------------------------------------------
@@ -185,8 +186,8 @@ class IptvRepository @Inject constructor(
                 IptvVodKind.MOVIE -> "get_vod_categories" to "get_vod_streams"
                 IptvVodKind.SERIES -> "get_series_categories" to "get_series"
             }
-            val categories = XtreamApi.parseCategories(fetchText(XtreamApi.apiUrl(playlist, categoriesAction)))
-            val body = fetchText(XtreamApi.apiUrl(playlist, itemsAction))
+            val categories = XtreamApi.parseCategories(fetchText(XtreamApi.apiUrl(playlist, categoriesAction), playlist.userAgent))
+            val body = fetchText(XtreamApi.apiUrl(playlist, itemsAction), playlist.userAgent)
             val items = if (kind == IptvVodKind.MOVIE) XtreamApi.parseMovies(body) else XtreamApi.parseSeries(body)
             vodCaches[kind] = VodCache(key, categories, items)
             Result.success(categories to items)
@@ -195,13 +196,71 @@ class IptvRepository @Inject constructor(
         }
     }
 
-    suspend fun getSeriesEpisodes(series: IptvVodItem): Result<List<IptvSeriesEpisode>> = withContext(Dispatchers.IO) {
-        val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }
-            ?: return@withContext Result.failure(IllegalStateException("not_xtream"))
-        runCatching {
-            XtreamApi.parseSeriesEpisodes(
-                fetchText(XtreamApi.apiUrl(playlist, "get_series_info", mapOf("series_id" to series.id)))
-            )
+    /** Plot and credits of a movie, or of a series together with its episodes (one request). */
+    suspend fun getVodInfo(item: IptvVodItem): Result<Pair<IptvVodDetails, List<IptvSeriesEpisode>>> =
+        withContext(Dispatchers.IO) {
+            val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }
+                ?: return@withContext Result.failure(IllegalStateException("not_xtream"))
+            runCatching {
+                if (item.kind == IptvVodKind.MOVIE) {
+                    val body = fetchText(
+                        XtreamApi.apiUrl(playlist, "get_vod_info", mapOf("vod_id" to item.id)),
+                        playlist.userAgent
+                    )
+                    XtreamApi.parseVodDetails(body) to emptyList()
+                } else {
+                    val body = fetchText(
+                        XtreamApi.apiUrl(playlist, "get_series_info", mapOf("series_id" to item.id)),
+                        playlist.userAgent
+                    )
+                    XtreamApi.parseVodDetails(body) to XtreamApi.parseSeriesEpisodes(body)
+                }
+            }
+        }
+
+    /** Headers the player must send for this playlist's streams (its custom User-Agent). */
+    suspend fun playbackHeaders(): Map<String, String>? =
+        getActivePlaylist()?.userAgent?.takeIf { it.isNotBlank() }?.let { mapOf("User-Agent" to it) }
+
+    /** Catch-up address of a programme that already aired, when the channel is archived. */
+    suspend fun timeshiftUrl(channel: IptvChannel, programme: EpgProgramme): String? {
+        if (channel.archiveDays <= 0) return null
+        val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM } ?: return null
+        val minutes = ((programme.stopMillis - programme.startMillis) / 60_000L).toInt()
+        return XtreamApi.timeshiftUrl(playlist, channel.id, programme.startMillis, minutes)
+    }
+
+    // --- Hidden categories and favourite titles --------------------------------------------
+
+    /** Key of a live group ("live"), movie category ("movie") or series category ("series"). */
+    suspend fun categoryKey(kind: String, id: String): String = "${activeSourceId()}|$kind|$id"
+
+    suspend fun vodKey(item: IptvVodItem): String = "${activeSourceId()}|${item.kind.name}|${item.id}"
+
+    /** Start of every hidden-category and favourite key of the source in use. */
+    suspend fun sourceKeyPrefix(): String = "${activeSourceId()}|"
+
+    private suspend fun activeSourceId(): String =
+        if (preferences.worldSource.first()) "world" else getActivePlaylist()?.id.orEmpty()
+
+    suspend fun getHiddenCategoryKeys(): Set<String> = preferences.getHiddenCategoryKeys()
+
+    suspend fun toggleHiddenCategory(key: String): Set<String> = preferences.toggleHiddenCategory(key)
+
+    suspend fun getFavoriteVodKeys(): Set<String> = preferences.getFavoriteVodKeys()
+
+    suspend fun toggleFavoriteVod(key: String): Set<String> = preferences.toggleFavoriteVod(key)
+
+    private fun Request.Builder.withUserAgent(userAgent: String): Request.Builder =
+        if (userAgent.isBlank()) this else header("User-Agent", userAgent)
+
+    /** Streams must be requested with the playlist's User-Agent too, not just the list. */
+    private fun List<IptvChannel>.withUserAgent(userAgent: String): List<IptvChannel> {
+        if (userAgent.isBlank()) return this
+        return map { channel ->
+            val headers = channel.headers.orEmpty()
+            if (headers.keys.any { it.equals("User-Agent", ignoreCase = true) }) channel
+            else channel.copy(headers = headers + ("User-Agent" to userAgent))
         }
     }
 
@@ -221,8 +280,8 @@ class IptvRepository @Inject constructor(
             .build()
     }
 
-    private fun fetchText(url: String): String {
-        val request = Request.Builder().url(url).build()
+    private fun fetchText(url: String, userAgent: String = ""): String {
+        val request = Request.Builder().url(url).withUserAgent(userAgent).build()
         apiClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
             return response.body?.string() ?: throw IOException("empty_response")

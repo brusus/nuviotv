@@ -8,6 +8,7 @@ import com.nuvio.tv.domain.model.IptvChannel
 import com.nuvio.tv.domain.model.IptvPlaylist
 import com.nuvio.tv.domain.model.IptvSeriesEpisode
 import com.nuvio.tv.domain.model.IptvVodCategory
+import com.nuvio.tv.domain.model.IptvVodDetails
 import com.nuvio.tv.domain.model.IptvVodItem
 import com.nuvio.tv.domain.model.IptvVodKind
 import java.net.URLEncoder
@@ -101,7 +102,13 @@ object XtreamApi {
                 logoUrl = obj.str("stream_icon")?.takeIf { it.startsWith("http", ignoreCase = true) },
                 groupTitle = categoryNames[obj.str("category_id")].orEmpty(),
                 streamUrl = liveUrl(playlist, streamId, extension),
-                epgId = obj.str("epg_channel_id")?.takeIf { it.isNotBlank() }
+                epgId = obj.str("epg_channel_id")?.takeIf { it.isNotBlank() },
+                isRadio = obj.str("stream_type").orEmpty().contains("radio", ignoreCase = true),
+                archiveDays = if (obj.str("tv_archive") == "1") {
+                    obj.str("tv_archive_duration")?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+                } else {
+                    0
+                }
             )
         }
     }
@@ -163,6 +170,48 @@ object XtreamApi {
                 )
             }
         }.sortedWith(compareBy({ it.season }, { it.episode }))
+    }
+
+    /**
+     * Plot and credits from `get_vod_info` or `get_series_info`: both keep them under
+     * "info", with slightly different field names.
+     */
+    fun parseVodDetails(json: String): IptvVodDetails {
+        val info = (parse(json) as? JsonObject)?.obj("info") ?: return IptvVodDetails()
+        fun first(vararg keys: String): String =
+            keys.firstNotNullOfOrNull { key -> info.str(key)?.trim()?.takeIf { it.isNotEmpty() } }.orEmpty()
+        val backdrop = when (val value = info.get("backdrop_path")) {
+            is JsonArray -> value.firstOrNull()?.asStringOrNull()
+            else -> value?.asStringOrNull()
+        }?.takeIf { it.startsWith("http", ignoreCase = true) }
+        return IptvVodDetails(
+            plot = first("plot", "description"),
+            genre = first("genre"),
+            year = first("releasedate", "releaseDate", "release_date", "year").take(4),
+            rating = first("rating").takeIf { it != "0" }.orEmpty(),
+            duration = first("duration"),
+            cast = first("cast", "actors"),
+            director = first("director"),
+            backdropUrl = backdrop
+        )
+    }
+
+    /**
+     * Catch-up URL for a programme that already aired, on channels the provider archives.
+     * The start time is written in the device's time zone, which is what most panels expect.
+     */
+    fun timeshiftUrl(
+        playlist: IptvPlaylist,
+        streamId: String,
+        startMillis: Long,
+        durationMinutes: Int,
+        timeZone: java.util.TimeZone = java.util.TimeZone.getDefault()
+    ): String {
+        val start = java.text.SimpleDateFormat("yyyy-MM-dd:HH-mm", java.util.Locale.US)
+            .apply { this.timeZone = timeZone }
+            .format(java.util.Date(startMillis))
+        return "${baseUrl(playlist.url)}/timeshift/${enc(playlist.username)}/${enc(playlist.password)}/" +
+            "${durationMinutes.coerceAtLeast(1)}/$start/$streamId.ts"
     }
 
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")

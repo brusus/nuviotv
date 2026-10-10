@@ -13,6 +13,7 @@ import com.nuvio.tv.domain.model.IptvPlaylist
 import com.nuvio.tv.domain.model.IptvPlaylistType
 import com.nuvio.tv.domain.model.IptvSeriesEpisode
 import com.nuvio.tv.domain.model.IptvVodCategory
+import com.nuvio.tv.domain.model.IptvVodDetails
 import com.nuvio.tv.domain.model.IptvVodItem
 import com.nuvio.tv.domain.model.IptvVodKind
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -69,10 +70,27 @@ data class IptvUiState(
     val vodCategories: List<IptvVodCategory> = emptyList(),
     val vodItems: List<IptvVodItem> = emptyList(),
     val selectedVodCategoryId: String = VOD_CATEGORY_RECENT,
-    /** Series whose episode list is open. */
+    /** Movie or series whose details are open. */
     val seriesDetail: IptvVodItem? = null,
     val seriesEpisodes: List<IptvSeriesEpisode> = emptyList(),
-    val seriesLoading: Boolean = false
+    val seriesLoading: Boolean = false,
+    val vodDetails: IptvVodDetails? = null,
+    /** Start of every key below for the source in use ("<playlist id>|"). */
+    val sourceKeyPrefix: String = "",
+    /** Hidden live groups and movie/series categories, as "<prefix><kind>|<id>". */
+    val hiddenCategoryKeys: Set<String> = emptySet(),
+    /** Starred movies and series, as "<prefix><KIND>|<id>". */
+    val favoriteVodKeys: Set<String> = emptySet(),
+    /** Channel number being typed on the remote, shown until it is applied. */
+    val typedNumber: String = "",
+    /** Channel the list must scroll to and focus (number entry); cleared once handled. */
+    val jumpToChannelUrl: String? = null,
+    /** Both catalogues, loaded when the global search opens. */
+    val searchMovies: List<IptvVodItem> = emptyList(),
+    val searchSeries: List<IptvVodItem> = emptyList(),
+    val searchLoading: Boolean = false,
+    /** Channel whose past programmes (catch-up) are listed. */
+    val archiveChannel: IptvChannel? = null
 ) {
     val activePlaylist: IptvPlaylist?
         get() = playlists.firstOrNull { it.id == activePlaylistId } ?: playlists.firstOrNull()
@@ -81,16 +99,32 @@ data class IptvUiState(
     val hasVodSections: Boolean
         get() = !worldSource && activePlaylist?.type == IptvPlaylistType.XTREAM
 
+    fun isGroupHidden(group: String): Boolean = "${sourceKeyPrefix}live|$group" in hiddenCategoryKeys
+
+    private val vodCategoryKind: String
+        get() = if (section == IptvSection.SERIES) "series" else "movie"
+
+    fun vodCategoryKey(categoryId: String): String = "$sourceKeyPrefix$vodCategoryKind|$categoryId"
+
+    fun isVodCategoryHidden(categoryId: String): Boolean = vodCategoryKey(categoryId) in hiddenCategoryKeys
+
+    fun vodKey(item: IptvVodItem): String = "$sourceKeyPrefix${item.kind.name}|${item.id}"
+
+    fun isVodFavorite(item: IptvVodItem): Boolean = vodKey(item) in favoriteVodKeys
+
     val visibleVodItems: List<IptvVodItem>
         get() {
+            // A hidden category drops out of the mixed lists, but can still be opened itself.
+            val shown = vodItems.filter { !isVodCategoryHidden(it.categoryId) }
             if (searchQuery.isNotBlank()) {
                 // Searching looks through the whole section, not just the open category.
                 val q = searchQuery.trim()
-                return vodItems.filter { it.name.contains(q, ignoreCase = true) }
+                return shown.filter { it.name.contains(q, ignoreCase = true) }
             }
             return when (selectedVodCategoryId) {
-                VOD_CATEGORY_RECENT -> vodItems.sortedByDescending { it.addedEpochSeconds }.take(MAX_RECENT_VOD)
-                VOD_CATEGORY_ALL -> vodItems
+                VOD_CATEGORY_RECENT -> shown.sortedByDescending { it.addedEpochSeconds }.take(MAX_RECENT_VOD)
+                VOD_CATEGORY_ALL -> shown
+                VOD_CATEGORY_FAVORITES -> vodItems.filter { isVodFavorite(it) }
                 else -> vodItems.filter { it.categoryId == selectedVodCategoryId }
             }
         }
@@ -98,7 +132,7 @@ data class IptvUiState(
     val visibleChannels: List<IptvChannel>
         get() {
             var list = when (selectedTab) {
-                IptvTab.ALL -> channels
+                IptvTab.ALL, IptvTab.GUIDE -> channels.filter { !isGroupHidden(it.groupTitle) }
                 IptvTab.GROUPS ->
                     if (selectedGroup.isNullOrBlank()) emptyList()
                     else channels.filter { it.groupTitle == selectedGroup }
@@ -128,17 +162,33 @@ data class IptvUiState(
     /** True while the Groups tab shows the list of groups rather than one group's channels. */
     val showingGroupList: Boolean
         get() = selectedTab == IptvTab.GROUPS && selectedGroup.isNullOrBlank()
+
+    /** Global search: channels, movies and series whose name contains the query. */
+    val searchChannels: List<IptvChannel>
+        get() = searchQuery.trim().let { q ->
+            if (q.length < 2) emptyList()
+            else channels.filter { it.name.contains(q, ignoreCase = true) }.take(MAX_SEARCH_RESULTS)
+        }
+
+    val searchVodResults: List<IptvVodItem>
+        get() = searchQuery.trim().let { q ->
+            if (q.length < 2) emptyList()
+            else (searchMovies + searchSeries).filter { it.name.contains(q, ignoreCase = true) }.take(MAX_SEARCH_RESULTS)
+        }
 }
 
 enum class IptvError { NOT_CONFIGURED, LOAD_FAILED }
 
-enum class IptvTab { ALL, GROUPS, FAVORITES, RECENT }
+enum class IptvTab { ALL, GROUPS, FAVORITES, RECENT, GUIDE }
 
-enum class IptvSection { LIVE, MOVIES, SERIES }
+enum class IptvSection { LIVE, MOVIES, SERIES, SEARCH }
 
 const val VOD_CATEGORY_RECENT = "__recent"
 const val VOD_CATEGORY_ALL = "__all"
+const val VOD_CATEGORY_FAVORITES = "__favorites"
 private const val MAX_RECENT_VOD = 60
+private const val MAX_SEARCH_RESULTS = 60
+private const val NUMBER_ENTRY_DELAY_MS = 1_300L
 
 @HiltViewModel
 class IptvViewModel @Inject constructor(
@@ -154,6 +204,9 @@ class IptvViewModel @Inject constructor(
             val worldCountry = repository.worldCountry.first()
             val playlists = repository.getPlaylists()
             val activePlaylistId = repository.getActivePlaylist()?.id
+            val keyPrefix = repository.sourceKeyPrefix()
+            val hidden = repository.getHiddenCategoryKeys()
+            val favoriteVod = repository.getFavoriteVodKeys()
             _uiState.update {
                 it.copy(
                     isLoading = true,
@@ -161,7 +214,10 @@ class IptvViewModel @Inject constructor(
                     worldSource = worldSource,
                     worldCountryCode = worldCountry,
                     playlists = playlists,
-                    activePlaylistId = activePlaylistId
+                    activePlaylistId = activePlaylistId,
+                    sourceKeyPrefix = keyPrefix,
+                    hiddenCategoryKeys = hidden,
+                    favoriteVodKeys = favoriteVod
                 )
             }
             if (worldSource) loadWorldCountries()
@@ -289,7 +345,7 @@ class IptvViewModel @Inject constructor(
         }
     }
 
-    fun addM3uPlaylist(name: String, url: String, epgUrl: String) {
+    fun addM3uPlaylist(name: String, url: String, epgUrl: String, userAgent: String) {
         if (url.isBlank()) return
         savePlaylist(
             IptvPlaylist(
@@ -297,13 +353,14 @@ class IptvViewModel @Inject constructor(
                 name = name.trim().ifEmpty { hostOf(url) },
                 type = IptvPlaylistType.M3U,
                 url = url.trim(),
-                epgUrl = epgUrl.trim()
+                epgUrl = epgUrl.trim(),
+                userAgent = userAgent.trim()
             ),
             verify = false
         )
     }
 
-    fun addXtreamPlaylist(name: String, server: String, username: String, password: String) {
+    fun addXtreamPlaylist(name: String, server: String, username: String, password: String, userAgent: String) {
         if (server.isBlank() || username.isBlank() || password.isBlank()) return
         savePlaylist(
             IptvPlaylist(
@@ -312,7 +369,8 @@ class IptvViewModel @Inject constructor(
                 type = IptvPlaylistType.XTREAM,
                 url = server.trim(),
                 username = username.trim(),
-                password = password
+                password = password,
+                userAgent = userAgent.trim()
             ),
             verify = true
         )
@@ -347,7 +405,12 @@ class IptvViewModel @Inject constructor(
                 vodCategories = emptyList(),
                 vodItems = emptyList(),
                 selectedVodCategoryId = VOD_CATEGORY_RECENT,
-                seriesDetail = null
+                seriesDetail = null,
+                searchMovies = emptyList(),
+                searchSeries = emptyList(),
+                archiveChannel = null,
+                typedNumber = "",
+                jumpToChannelUrl = null
             )
         }
     }
@@ -364,14 +427,18 @@ class IptvViewModel @Inject constructor(
         _uiState.update {
             it.copy(section = section, searchQuery = "", selectedVodCategoryId = VOD_CATEGORY_RECENT, seriesDetail = null)
         }
-        if (section != IptvSection.LIVE) loadVod()
+        when (section) {
+            IptvSection.MOVIES, IptvSection.SERIES -> loadVod()
+            IptvSection.SEARCH -> loadSearchCatalogues()
+            IptvSection.LIVE -> Unit
+        }
     }
 
     fun loadVod(forceRefresh: Boolean = false) {
         val kind = when (_uiState.value.section) {
             IptvSection.MOVIES -> IptvVodKind.MOVIE
             IptvSection.SERIES -> IptvVodKind.SERIES
-            IptvSection.LIVE -> return
+            IptvSection.LIVE, IptvSection.SEARCH -> return
         }
         viewModelScope.launch {
             _uiState.update { it.copy(vodLoading = true, vodError = false, vodItems = emptyList(), vodCategories = emptyList()) }
@@ -388,35 +455,147 @@ class IptvViewModel @Inject constructor(
         _uiState.update { it.copy(selectedVodCategoryId = id) }
     }
 
-    /** A movie starts playing; a series opens its episode list. */
+    /** Opens the details of a movie or series: plot and credits, plus the episodes of a series. */
     fun openVodItem(item: IptvVodItem) {
         viewModelScope.launch {
-            if (item.kind == IptvVodKind.MOVIE) {
-                val url = repository.movieUrl(item) ?: return@launch
-                _uiState.update {
-                    it.copy(playbackRequest = IptvPlaybackRequest(url, null, item.name, contentType = "movie"))
-                }
-            } else {
-                _uiState.update { it.copy(seriesDetail = item, seriesEpisodes = emptyList(), seriesLoading = true) }
-                val episodes = repository.getSeriesEpisodes(item).getOrDefault(emptyList())
-                _uiState.update {
-                    if (it.seriesDetail?.id == item.id) it.copy(seriesEpisodes = episodes, seriesLoading = false) else it
+            _uiState.update {
+                it.copy(seriesDetail = item, seriesEpisodes = emptyList(), vodDetails = null, seriesLoading = true)
+            }
+            val (details, episodes) = repository.getVodInfo(item)
+                .getOrDefault(IptvVodDetails() to emptyList())
+            _uiState.update {
+                if (it.seriesDetail?.id == item.id && it.seriesDetail.kind == item.kind) {
+                    it.copy(vodDetails = details, seriesEpisodes = episodes, seriesLoading = false)
+                } else {
+                    it
                 }
             }
         }
     }
 
     fun dismissSeries() {
-        _uiState.update { it.copy(seriesDetail = null, seriesEpisodes = emptyList(), seriesLoading = false) }
+        _uiState.update {
+            it.copy(seriesDetail = null, seriesEpisodes = emptyList(), vodDetails = null, seriesLoading = false)
+        }
+    }
+
+    fun playMovie(item: IptvVodItem) {
+        viewModelScope.launch {
+            val url = repository.movieUrl(item) ?: return@launch
+            val headers = repository.playbackHeaders()
+            _uiState.update {
+                it.copy(playbackRequest = IptvPlaybackRequest(url, headers, item.name, contentType = "movie"))
+            }
+        }
     }
 
     fun playEpisode(episode: IptvSeriesEpisode) {
         val series = _uiState.value.seriesDetail ?: return
         viewModelScope.launch {
             val url = repository.episodeUrl(episode) ?: return@launch
+            val headers = repository.playbackHeaders()
             val label = "${series.name} S${episode.season}E${episode.episode}"
             _uiState.update {
-                it.copy(playbackRequest = IptvPlaybackRequest(url, null, label, contentType = "movie"))
+                it.copy(playbackRequest = IptvPlaybackRequest(url, headers, label, contentType = "movie"))
+            }
+        }
+    }
+
+    fun toggleVodFavorite(item: IptvVodItem) {
+        viewModelScope.launch {
+            val keys = repository.toggleFavoriteVod(_uiState.value.vodKey(item))
+            _uiState.update { it.copy(favoriteVodKeys = keys) }
+        }
+    }
+
+    // --- Hidden categories ---------------------------------------------------------------
+
+    fun toggleGroupHidden(group: String) {
+        toggleHidden("${_uiState.value.sourceKeyPrefix}live|$group")
+    }
+
+    fun toggleVodCategoryHidden(categoryId: String) {
+        toggleHidden(_uiState.value.vodCategoryKey(categoryId))
+    }
+
+    private fun toggleHidden(key: String) {
+        viewModelScope.launch {
+            val keys = repository.toggleHiddenCategory(key)
+            _uiState.update { it.copy(hiddenCategoryKeys = keys) }
+        }
+    }
+
+    // --- Channel number entry --------------------------------------------------------------
+
+    private var numberJob: kotlinx.coroutines.Job? = null
+
+    /** Digits typed on the remote form a channel number; after a pause the list jumps to it. */
+    fun onDigit(digit: Int) {
+        val typed = (_uiState.value.typedNumber + digit).takeLast(4)
+        _uiState.update { it.copy(typedNumber = typed) }
+        numberJob?.cancel()
+        numberJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(NUMBER_ENTRY_DELAY_MS)
+            val state = _uiState.value
+            val channel = state.visibleChannels.getOrNull((typed.toIntOrNull() ?: 0) - 1)
+            _uiState.update {
+                it.copy(
+                    typedNumber = "",
+                    jumpToChannelUrl = channel?.streamUrl ?: it.jumpToChannelUrl,
+                    previewChannel = channel ?: it.previewChannel
+                )
+            }
+        }
+    }
+
+    fun consumeChannelJump() {
+        _uiState.update { it.copy(jumpToChannelUrl = null) }
+    }
+
+    // --- Global search ---------------------------------------------------------------------
+
+    private fun loadSearchCatalogues() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(searchLoading = true) }
+            val movies = repository.getVod(IptvVodKind.MOVIE).getOrNull()?.second.orEmpty()
+            val series = repository.getVod(IptvVodKind.SERIES).getOrNull()?.second.orEmpty()
+            _uiState.update { it.copy(searchLoading = false, searchMovies = movies, searchSeries = series) }
+        }
+    }
+
+    // --- Catch-up ----------------------------------------------------------------------------
+
+    fun openArchive(channel: IptvChannel) {
+        _uiState.update { it.copy(archiveChannel = channel) }
+    }
+
+    fun dismissArchive() {
+        _uiState.update { it.copy(archiveChannel = null) }
+    }
+
+    /** Programmes of [channel] that already ended and are still inside its archive window. */
+    fun pastProgrammes(channel: IptvChannel, nowMillis: Long = System.currentTimeMillis()): List<EpgProgramme> {
+        val programmes = programmesFor(channel) ?: return emptyList()
+        val oldest = nowMillis - channel.archiveDays * 24L * 60L * 60L * 1000L
+        return programmes
+            .filter { it.stopMillis <= nowMillis && it.startMillis >= oldest }
+            .sortedByDescending { it.startMillis }
+    }
+
+    fun playArchive(programme: EpgProgramme) {
+        val channel = _uiState.value.archiveChannel ?: return
+        viewModelScope.launch {
+            val url = repository.timeshiftUrl(channel, programme) ?: return@launch
+            _uiState.update {
+                it.copy(
+                    archiveChannel = null,
+                    playbackRequest = IptvPlaybackRequest(
+                        streamUrl = url,
+                        headers = channel.headers,
+                        title = "${channel.name} · ${programme.title}",
+                        contentType = "movie"
+                    )
+                )
             }
         }
     }

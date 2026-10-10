@@ -14,7 +14,21 @@ data class IptvPlaylist(
     val url: String,
     val username: String = "",
     val password: String = "",
-    val epgUrl: String = ""
+    val epgUrl: String = "",
+    /** Sent instead of the app's own User-Agent, for providers that only accept a known player. */
+    val userAgent: String = ""
+)
+
+/** Plot and credits of a movie or series, shown before playing. */
+data class IptvVodDetails(
+    val plot: String = "",
+    val genre: String = "",
+    val year: String = "",
+    val rating: String = "",
+    val duration: String = "",
+    val cast: String = "",
+    val director: String = "",
+    val backdropUrl: String? = null
 )
 
 enum class IptvVodKind { MOVIE, SERIES }

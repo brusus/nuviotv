@@ -31,6 +31,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -47,6 +51,7 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.IptvSeriesEpisode
+import com.nuvio.tv.domain.model.IptvVodDetails
 import com.nuvio.tv.domain.model.IptvVodItem
 import com.nuvio.tv.domain.model.IptvVodKind
 import com.nuvio.tv.ui.components.LoadingIndicator
@@ -90,12 +95,33 @@ internal fun IptvVodPane(
                             onClick = { viewModel.selectVodCategory(VOD_CATEGORY_ALL) }
                         )
                     }
-                    items(uiState.vodCategories, key = { "c:" + it.id }) { category ->
+                    item(key = VOD_CATEGORY_FAVORITES) {
                         IptvVodCategoryRow(
-                            label = category.name,
-                            selected = uiState.selectedVodCategoryId == category.id,
-                            onClick = { viewModel.selectVodCategory(category.id) }
+                            label = "★  " + stringResource(R.string.iptv_tab_favorites),
+                            selected = uiState.selectedVodCategoryId == VOD_CATEGORY_FAVORITES,
+                            onClick = { viewModel.selectVodCategory(VOD_CATEGORY_FAVORITES) }
                         )
+                    }
+                    items(uiState.vodCategories, key = { "c:" + it.id }) { category ->
+                        val hidden = uiState.isVodCategoryHidden(category.id)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IptvVodCategoryRow(
+                                label = category.name,
+                                selected = uiState.selectedVodCategoryId == category.id,
+                                dimmed = hidden,
+                                onClick = { viewModel.selectVodCategory(category.id) },
+                                modifier = Modifier.weight(1f)
+                            )
+                            // A hidden category leaves "Recently added", "All" and the search.
+                            IptvRowButton(
+                                label = if (hidden) "＋" else "－",
+                                highlighted = false,
+                                onClick = { viewModel.toggleVodCategoryHidden(category.id) }
+                            )
+                        }
                     }
                 }
             }
@@ -126,33 +152,90 @@ internal fun IptvVodPane(
                 ) {
                     // Index in the key: providers do list the same title twice.
                     itemsIndexed(items, key = { index, item -> "$index|${item.id}" }) { _, item ->
-                        IptvVodCard(item = item, onClick = { viewModel.openVodItem(item) })
+                        IptvVodCard(
+                            item = item,
+                            isFavorite = uiState.isVodFavorite(item),
+                            onClick = { viewModel.openVodItem(item) }
+                        )
                     }
                 }
             }
         }
     }
+}
 
-    val series = uiState.seriesDetail
-    if (series != null) {
-        IptvSeriesDialog(
-            series = series,
-            episodes = uiState.seriesEpisodes,
-            loading = uiState.seriesLoading,
-            onPlay = viewModel::playEpisode,
-            onDismiss = viewModel::dismissSeries
-        )
+/**
+ * One search across the whole account: live channels, movies and series whose name contains
+ * the query, each card tagged with what it is.
+ */
+@Composable
+internal fun IptvSearchPane(
+    uiState: IptvUiState,
+    viewModel: IptvViewModel,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxWidth(0.6f)) {
+            IptvSearchRow(query = uiState.searchQuery, onQueryChange = viewModel::updateSearchQuery)
+        }
+        val channels = uiState.searchChannels
+        val titles = uiState.searchVodResults
+        when {
+            uiState.searchQuery.trim().length < 2 ->
+                IptvPaneMessage(text = stringResource(R.string.iptv_search_global_hint))
+            uiState.searchLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                LoadingIndicator(modifier = Modifier.fillMaxWidth(0.08f).aspectRatio(1f))
+            }
+            channels.isEmpty() && titles.isEmpty() ->
+                IptvPaneMessage(text = stringResource(R.string.iptv_no_results))
+            else -> LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 128.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = NuvioTheme.spacing.xl,
+                    end = NuvioTheme.spacing.xl,
+                    top = NuvioTheme.spacing.xs,
+                    bottom = NuvioTheme.spacing.lg
+                ),
+                horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md),
+                verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
+            ) {
+                itemsIndexed(channels, key = { index, channel -> "tv|$index|${channel.streamUrl}" }) { _, channel ->
+                    IptvPosterCard(
+                        title = channel.name,
+                        imageUrl = channel.logoUrl,
+                        badge = stringResource(R.string.iptv_section_live),
+                        isFavorite = channel.streamUrl in uiState.favoriteUrls,
+                        fitImage = true,
+                        onClick = { viewModel.playChannel(channel) }
+                    )
+                }
+                itemsIndexed(titles, key = { index, item -> "vod|$index|${item.kind}|${item.id}" }) { _, item ->
+                    IptvVodCard(
+                        item = item,
+                        isFavorite = uiState.isVodFavorite(item),
+                        onClick = { viewModel.openVodItem(item) }
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun IptvVodCategoryRow(label: String, selected: Boolean, onClick: () -> Unit) {
-    IptvListRow(onClick = onClick, accent = selected) {
+private fun IptvVodCategoryRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    dimmed: Boolean = false
+) {
+    IptvListRow(onClick = onClick, accent = selected, modifier = modifier) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            color = NuvioTheme.colors.TextPrimary,
+            color = if (dimmed) NuvioTheme.colors.TextTertiary else NuvioTheme.colors.TextPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -160,7 +243,29 @@ private fun IptvVodCategoryRow(label: String, selected: Boolean, onClick: () -> 
 }
 
 @Composable
-private fun IptvVodCard(item: IptvVodItem, onClick: () -> Unit) {
+internal fun IptvVodCard(item: IptvVodItem, isFavorite: Boolean, onClick: () -> Unit) {
+    IptvPosterCard(
+        title = item.name,
+        imageUrl = item.posterUrl,
+        badge = stringResource(
+            if (item.kind == IptvVodKind.MOVIE) R.string.iptv_vod_badge_movie else R.string.iptv_vod_badge_series
+        ),
+        isFavorite = isFavorite,
+        fitImage = false,
+        onClick = onClick
+    )
+}
+
+/** Poster with a type badge and the title underneath; [fitImage] keeps channel logos whole. */
+@Composable
+internal fun IptvPosterCard(
+    title: String,
+    imageUrl: String?,
+    badge: String,
+    isFavorite: Boolean,
+    fitImage: Boolean,
+    onClick: () -> Unit
+) {
     var isFocused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(NuvioTheme.radii.md)
     Column(
@@ -178,16 +283,16 @@ private fun IptvVodCard(item: IptvVodItem, onClick: () -> Unit) {
                 .then(if (isFocused) Modifier.border(NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs), shape) else Modifier),
             contentAlignment = Alignment.Center
         ) {
-            if (item.posterUrl != null) {
+            if (imageUrl != null) {
                 AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current).data(item.posterUrl).crossfade(true).build(),
+                    model = ImageRequest.Builder(LocalContext.current).data(imageUrl).crossfade(true).build(),
                     contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+                    modifier = if (fitImage) Modifier.fillMaxWidth(0.7f) else Modifier.fillMaxSize(),
+                    contentScale = if (fitImage) ContentScale.Fit else ContentScale.Crop
                 )
             } else {
                 Text(
-                    text = item.name,
+                    text = title,
                     style = MaterialTheme.typography.labelMedium,
                     color = NuvioTheme.colors.TextSecondary,
                     textAlign = TextAlign.Center,
@@ -197,9 +302,7 @@ private fun IptvVodCard(item: IptvVodItem, onClick: () -> Unit) {
                 )
             }
             Text(
-                text = stringResource(
-                    if (item.kind == IptvVodKind.MOVIE) R.string.iptv_vod_badge_movie else R.string.iptv_vod_badge_series
-                ),
+                text = badge.uppercase(),
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
@@ -210,9 +313,22 @@ private fun IptvVodCard(item: IptvVodItem, onClick: () -> Unit) {
                     .background(Color.Black.copy(alpha = 0.7f))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             )
+            if (isFavorite) {
+                Text(
+                    text = "★",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black.copy(alpha = 0.7f))
+                        .padding(horizontal = 6.dp)
+                )
+            }
         }
         Text(
-            text = item.name,
+            text = title,
             style = MaterialTheme.typography.labelMedium,
             color = if (isFocused) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary,
             maxLines = 2,
@@ -222,28 +338,124 @@ private fun IptvVodCard(item: IptvVodItem, onClick: () -> Unit) {
     }
 }
 
+/**
+ * Details of a movie or series: poster, year, rating, plot and credits, with Play (movie)
+ * or the seasons and episodes (series), and the favourite toggle.
+ */
 @Composable
-private fun IptvSeriesDialog(
-    series: IptvVodItem,
+internal fun IptvVodDetailDialog(
+    item: IptvVodItem,
+    details: IptvVodDetails?,
     episodes: List<IptvSeriesEpisode>,
     loading: Boolean,
-    onPlay: (IptvSeriesEpisode) -> Unit,
+    isFavorite: Boolean,
+    onPlayMovie: () -> Unit,
+    onPlayEpisode: (IptvSeriesEpisode) -> Unit,
+    onToggleFavorite: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val seasons = remember(episodes) { episodes.map { it.season }.distinct().sorted() }
     var season by remember(seasons) { mutableStateOf(seasons.firstOrNull()) }
+    val firstAction = remember { FocusRequester() }
+    LaunchedEffect(loading) { if (!loading) runCatching { firstAction.requestFocus() } }
 
-    NuvioDialog(onDismiss = onDismiss, title = series.name, subtitle = null, width = 700.dp) {
-        when {
-            loading -> Box(Modifier.fillMaxWidth().padding(NuvioTheme.spacing.xl), contentAlignment = Alignment.Center) {
-                LoadingIndicator(modifier = Modifier.fillMaxWidth(0.12f).aspectRatio(1f))
+    NuvioDialog(onDismiss = onDismiss, title = item.name, subtitle = null, width = 820.dp) {
+        Row(horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.lg)) {
+            Box(
+                modifier = Modifier
+                    .width(150.dp)
+                    .aspectRatio(2f / 3f)
+                    .clip(RoundedCornerShape(NuvioTheme.radii.md))
+                    .background(NuvioTheme.colors.Surface)
+            ) {
+                if (item.posterUrl != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current).data(item.posterUrl).crossfade(true).build(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
-            episodes.isEmpty() -> Text(
-                text = stringResource(R.string.iptv_vod_no_episodes),
-                style = MaterialTheme.typography.bodyMedium,
-                color = NuvioTheme.colors.TextSecondary
-            )
-            else -> {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)
+            ) {
+                val facts = listOfNotNull(
+                    details?.year?.takeIf { it.isNotBlank() },
+                    (details?.rating?.takeIf { it.isNotBlank() } ?: item.rating)?.let { "★ $it" },
+                    details?.duration?.takeIf { it.isNotBlank() },
+                    details?.genre?.takeIf { it.isNotBlank() }
+                )
+                if (facts.isNotEmpty()) {
+                    Text(
+                        text = facts.joinToString("  ·  "),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = NuvioTheme.colors.TextSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                when {
+                    loading -> LoadingIndicator(modifier = Modifier.width(36.dp).aspectRatio(1f))
+                    !details?.plot.isNullOrBlank() -> Text(
+                        text = details?.plot.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = NuvioTheme.colors.TextPrimary,
+                        maxLines = 5,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    else -> Text(
+                        text = stringResource(R.string.iptv_vod_no_plot),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = NuvioTheme.colors.TextSecondary
+                    )
+                }
+                details?.director?.takeIf { it.isNotBlank() }?.let { director ->
+                    Text(
+                        text = stringResource(R.string.iptv_vod_director, director),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NuvioTheme.colors.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                details?.cast?.takeIf { it.isNotBlank() }?.let { cast ->
+                    Text(
+                        text = stringResource(R.string.iptv_vod_cast, cast),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NuvioTheme.colors.TextSecondary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)) {
+                    if (item.kind == IptvVodKind.MOVIE) {
+                        com.nuvio.tv.ui.components.Button(
+                            onClick = onPlayMovie,
+                            modifier = Modifier.focusRequester(firstAction)
+                        ) {
+                            Text("▶  " + stringResource(R.string.iptv_vod_play))
+                        }
+                    }
+                    com.nuvio.tv.ui.components.Button(
+                        onClick = onToggleFavorite,
+                        modifier = if (item.kind == IptvVodKind.SERIES) Modifier.focusRequester(firstAction) else Modifier
+                    ) {
+                        Text((if (isFavorite) "★  " else "☆  ") + stringResource(R.string.iptv_tab_favorites))
+                    }
+                }
+            }
+        }
+
+        if (item.kind == IptvVodKind.SERIES && !loading) {
+            if (episodes.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.iptv_vod_no_episodes),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NuvioTheme.colors.TextSecondary
+                )
+            } else {
                 if (seasons.size > 1) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)) {
                         items(seasons) { number ->
@@ -256,11 +468,11 @@ private fun IptvSeriesDialog(
                     }
                 }
                 LazyColumn(
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 200.dp),
                     verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
                 ) {
                     items(episodes.filter { it.season == season }, key = { it.id }) { episode ->
-                        IptvListRow(onClick = { onPlay(episode) }) {
+                        IptvListRow(onClick = { onPlayEpisode(episode) }) {
                             Text(
                                 text = episode.episode.toString(),
                                 style = MaterialTheme.typography.labelLarge,

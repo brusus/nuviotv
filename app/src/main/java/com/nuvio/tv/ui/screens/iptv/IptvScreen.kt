@@ -170,6 +170,7 @@ fun IptvScreen(
                                     IptvSection.LIVE -> R.string.iptv_section_live
                                     IptvSection.MOVIES -> R.string.iptv_section_movies
                                     IptvSection.SERIES -> R.string.iptv_section_series
+                                    IptvSection.SEARCH -> R.string.iptv_section_search
                                 }
                             ),
                             selected = uiState.section == section,
@@ -180,6 +181,9 @@ fun IptvScreen(
             }
 
             when {
+                uiState.hasVodSections && uiState.section == IptvSection.SEARCH -> {
+                    IptvSearchPane(uiState = uiState, viewModel = viewModel)
+                }
                 uiState.hasVodSections && uiState.section != IptvSection.LIVE -> {
                     IptvVodPane(uiState = uiState, viewModel = viewModel)
                 }
@@ -207,6 +211,30 @@ fun IptvScreen(
                 }
             }
         }
+    }
+
+    val detailItem = uiState.seriesDetail
+    if (detailItem != null) {
+        IptvVodDetailDialog(
+            item = detailItem,
+            details = uiState.vodDetails,
+            episodes = uiState.seriesEpisodes,
+            loading = uiState.seriesLoading,
+            isFavorite = uiState.isVodFavorite(detailItem),
+            onPlayMovie = { viewModel.playMovie(detailItem) },
+            onPlayEpisode = viewModel::playEpisode,
+            onToggleFavorite = { viewModel.toggleVodFavorite(detailItem) },
+            onDismiss = viewModel::dismissSeries
+        )
+    }
+    val archiveChannel = uiState.archiveChannel
+    if (archiveChannel != null) {
+        IptvArchiveDialog(
+            channelName = archiveChannel.name,
+            programmes = viewModel.pastProgrammes(archiveChannel),
+            onPlay = viewModel::playArchive,
+            onDismiss = viewModel::dismissArchive
+        )
     }
 
     if (uiState.showPlaylists) {

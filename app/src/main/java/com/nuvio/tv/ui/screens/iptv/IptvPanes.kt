@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -41,6 +42,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -107,6 +110,25 @@ internal fun IptvTwoPane(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    if (uiState.selectedTab == IptvTab.GUIDE) {
+        // The guide needs the whole width: the preview gives way to the timeline.
+        Column(modifier = modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxWidth(0.44f)) {
+                IptvSearchRow(query = uiState.searchQuery, onQueryChange = viewModel::updateSearchQuery)
+                IptvTabRow(selected = uiState.selectedTab, onSelect = viewModel::selectTab)
+            }
+            IptvGuideGrid(
+                channels = uiState.visibleChannels,
+                programmesOf = viewModel::upcomingProgrammes,
+                onPlay = { channel ->
+                    openingFullScreen = true
+                    viewModel.playChannel(channel)
+                }
+            )
+        }
+        return
+    }
+
     Row(modifier = modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -119,7 +141,12 @@ internal fun IptvTwoPane(
             )
             IptvTabRow(selected = uiState.selectedTab, onSelect = viewModel::selectTab)
             if (uiState.showingGroupList) {
-                IptvGroupList(groups = uiState.visibleGroups, onSelect = viewModel::selectGroup)
+                IptvGroupList(
+                    groups = uiState.visibleGroups,
+                    isHidden = uiState::isGroupHidden,
+                    onSelect = viewModel::selectGroup,
+                    onToggleHidden = viewModel::toggleGroupHidden
+                )
             } else {
                 IptvChannelList(
                     uiState = uiState,
@@ -145,14 +172,15 @@ internal fun IptvTwoPane(
 
 @Composable
 private fun IptvTabRow(selected: IptvTab, onSelect: (IptvTab) -> Unit) {
-    Row(
+    // Scrolls sideways when the tabs do not fit, instead of wrapping the last label.
+    LazyRow(
         horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm),
+        contentPadding = PaddingValues(horizontal = NuvioTheme.spacing.xl),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = NuvioTheme.spacing.xl)
             .padding(bottom = NuvioTheme.spacing.sm)
     ) {
-        IptvTab.entries.forEach { tab ->
+        items(IptvTab.entries) { tab ->
             GroupChip(
                 label = stringResource(
                     when (tab) {
@@ -160,6 +188,7 @@ private fun IptvTabRow(selected: IptvTab, onSelect: (IptvTab) -> Unit) {
                         IptvTab.GROUPS -> R.string.iptv_tab_groups
                         IptvTab.FAVORITES -> R.string.iptv_tab_favorites
                         IptvTab.RECENT -> R.string.iptv_tab_recent
+                        IptvTab.GUIDE -> R.string.iptv_tab_guide
                     }
                 ),
                 selected = tab == selected,
@@ -170,7 +199,12 @@ private fun IptvTabRow(selected: IptvTab, onSelect: (IptvTab) -> Unit) {
 }
 
 @Composable
-private fun IptvGroupList(groups: List<Pair<String, Int>>, onSelect: (String) -> Unit) {
+private fun IptvGroupList(
+    groups: List<Pair<String, Int>>,
+    isHidden: (String) -> Boolean,
+    onSelect: (String) -> Unit,
+    onToggleHidden: (String) -> Unit
+) {
     if (groups.isEmpty()) {
         IptvPaneMessage(text = stringResource(R.string.iptv_no_results))
         return
@@ -181,20 +215,32 @@ private fun IptvGroupList(groups: List<Pair<String, Int>>, onSelect: (String) ->
         verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
     ) {
         items(groups, key = { it.first }) { (group, count) ->
-            IptvListRow(onClick = { onSelect(group) }) {
-                Text(
-                    text = group.ifBlank { stringResource(R.string.iptv_group_untitled) },
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = NuvioTheme.colors.TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    text = count.toString(),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = NuvioTheme.colors.TextSecondary
+            val hidden = isHidden(group)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IptvListRow(onClick = { onSelect(group) }, modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = group.ifBlank { stringResource(R.string.iptv_group_untitled) },
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (hidden) NuvioTheme.colors.TextTertiary else NuvioTheme.colors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = if (hidden) stringResource(R.string.iptv_category_hidden) else count.toString(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NuvioTheme.colors.TextSecondary
+                    )
+                }
+                // Hidden groups stay listed here (to bring them back) but leave the "All" tab.
+                IptvRowButton(
+                    label = if (hidden) "＋" else "－",
+                    highlighted = false,
+                    onClick = { onToggleHidden(group) }
                 )
             }
         }
@@ -250,13 +296,39 @@ private fun IptvChannelList(
         }
     }
 
+    // Channel number typed on the remote: scroll to that channel and put the focus on it.
+    val jumpFocus = remember { FocusRequester() }
+    val jumpIndex = remember(channels, uiState.jumpToChannelUrl) {
+        uiState.jumpToChannelUrl?.let { url -> channels.indexOfFirst { it.streamUrl == url } } ?: -1
+    }
+    LaunchedEffect(uiState.jumpToChannelUrl) {
+        if (jumpIndex >= 0) {
+            listState.scrollToItem(jumpIndex + headerRows)
+            withFrameNanos { }
+            runCatching { jumpFocus.requestFocus() }
+        }
+        if (uiState.jumpToChannelUrl != null) viewModel.consumeChannelJump()
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         state = listState,
         // Entering the list from the sidebar or the tabs lands on the last channel watched.
-        modifier = if (lastChannelIndex >= 0) {
+        modifier = (if (lastChannelIndex >= 0) {
             Modifier.fillMaxSize().focusRestorer(lastChannelFocus)
         } else {
             Modifier.fillMaxSize()
+        }).onPreviewKeyEvent { event ->
+            // Only while the focus is in the list: the search field needs its own digits.
+            val native = event.nativeKeyEvent
+            val digit = when (native.keyCode) {
+                in AndroidKeyEvent.KEYCODE_0..AndroidKeyEvent.KEYCODE_9 -> native.keyCode - AndroidKeyEvent.KEYCODE_0
+                in AndroidKeyEvent.KEYCODE_NUMPAD_0..AndroidKeyEvent.KEYCODE_NUMPAD_9 ->
+                    native.keyCode - AndroidKeyEvent.KEYCODE_NUMPAD_0
+                else -> return@onPreviewKeyEvent false
+            }
+            if (native.action == AndroidKeyEvent.ACTION_DOWN && native.repeatCount == 0) viewModel.onDigit(digit)
+            true
         },
         contentPadding = PaddingValues(horizontal = NuvioTheme.spacing.xl, vertical = NuvioTheme.spacing.sm),
         verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
@@ -288,9 +360,29 @@ private fun IptvChannelList(
                 onFocused = { viewModel.onChannelFocused(channel) },
                 onClick = { onOpenFullScreen(channel) },
                 onLongClick = { viewModel.toggleFavorite(channel) },
-                modifier = if (index == lastChannelIndex) Modifier.focusRequester(lastChannelFocus) else Modifier
+                onOpenArchive = if (channel.archiveDays > 0) ({ viewModel.openArchive(channel) }) else null,
+                modifier = when (index) {
+                    jumpIndex -> Modifier.focusRequester(jumpFocus)
+                    lastChannelIndex -> Modifier.focusRequester(lastChannelFocus)
+                    else -> Modifier
+                }
             )
         }
+    }
+    if (uiState.typedNumber.isNotEmpty()) {
+        Text(
+            text = uiState.typedNumber,
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = NuvioTheme.colors.TextPrimary,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = NuvioTheme.spacing.xl, top = NuvioTheme.spacing.sm)
+                .clip(RoundedCornerShape(NuvioTheme.radii.md))
+                .background(NuvioTheme.colors.BackgroundElevated)
+                .padding(horizontal = NuvioTheme.spacing.lg, vertical = NuvioTheme.spacing.sm)
+        )
+    }
     }
 }
 
@@ -341,6 +433,7 @@ private fun IptvChannelRow(
     onFocused: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onOpenArchive: (() -> Unit)?,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -375,7 +468,7 @@ private fun IptvChannelRow(
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = channel.name,
+                text = if (channel.isRadio) "📻 ${channel.name}" else channel.name,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = NuvioTheme.colors.TextPrimary,
@@ -395,12 +488,28 @@ private fun IptvChannelRow(
     }
     // Its own stop for the remote (D-pad right from the channel): a long press on OK is
     // not something a TV user discovers, and not every remote reports it.
-    IptvStarButton(isFavorite = isFavorite, onClick = onLongClick, onFocused = onFocused)
+    // Programmes that already aired, on channels the provider archives.
+    if (onOpenArchive != null) {
+        IptvRowButton(label = "↺", highlighted = false, onClick = onOpenArchive, onFocused = onFocused)
+    }
+    IptvRowButton(
+        label = if (isFavorite) "★" else "☆",
+        highlighted = isFavorite,
+        onClick = onLongClick,
+        onFocused = onFocused
+    )
     }
 }
 
+/** Small square button at the end of a list row (favourite star, hide, catch-up). */
 @Composable
-private fun IptvStarButton(isFavorite: Boolean, onClick: () -> Unit, onFocused: () -> Unit) {
+internal fun IptvRowButton(
+    label: String,
+    highlighted: Boolean,
+    onClick: () -> Unit,
+    onFocused: () -> Unit = {}
+) {
+    val isFavorite = highlighted
     var isFocused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(NuvioTheme.radii.md)
     Box(
@@ -417,7 +526,7 @@ private fun IptvStarButton(isFavorite: Boolean, onClick: () -> Unit, onFocused: 
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = if (isFavorite) "★" else "☆",
+            text = label,
             style = MaterialTheme.typography.titleMedium,
             color = if (isFavorite) NuvioTheme.colors.Primary else NuvioTheme.colors.TextTertiary
         )
@@ -462,6 +571,28 @@ private fun IptvPreviewPane(
         ) {
             if (channel != null && playVideo) {
                 IptvPreviewPlayer(channel = channel)
+                if (channel.isRadio) {
+                    // Audio only: show the station instead of an empty video frame.
+                    Column(
+                        modifier = Modifier.fillMaxSize().background(Color.Black),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        if (channel.logoUrl != null) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current).data(channel.logoUrl).crossfade(true).build(),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxWidth(0.3f).aspectRatio(1f),
+                                contentScale = ContentScale.Fit
+                            )
+                        }
+                        Text(
+                            text = "📻 " + stringResource(R.string.iptv_radio),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White.copy(alpha = 0.8f)
+                        )
+                    }
+                }
             } else if (channel == null) {
                 Text(
                     text = stringResource(R.string.iptv_preview_select),
@@ -628,5 +759,126 @@ private fun IptvPreviewPlayer(channel: IptvChannel) {
             textAlign = TextAlign.Center
         )
         PreviewState.PLAYING -> Unit
+    }
+}
+
+private const val GUIDE_WINDOW_MINUTES = 180
+private const val GUIDE_SLOT_MINUTES = 30
+
+/**
+ * Multi-channel guide: one row per channel, programmes laid out on a shared timeline that
+ * starts at the current half hour. OK on a row opens that channel.
+ */
+@Composable
+private fun IptvGuideGrid(
+    channels: List<IptvChannel>,
+    programmesOf: (IptvChannel) -> List<EpgProgramme>,
+    onPlay: (IptvChannel) -> Unit
+) {
+    val slotMillis = GUIDE_SLOT_MINUTES * 60_000L
+    val windowStart = remember { System.currentTimeMillis() / slotMillis * slotMillis }
+    val windowEnd = windowStart + GUIDE_WINDOW_MINUTES * 60_000L
+    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+
+    if (channels.isEmpty()) {
+        IptvPaneMessage(text = stringResource(R.string.iptv_no_results))
+        return
+    }
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = NuvioTheme.spacing.xl)) {
+        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = NuvioTheme.spacing.md, vertical = NuvioTheme.spacing.xs)) {
+            Spacer(modifier = Modifier.width(GUIDE_NAME_WIDTH + NuvioTheme.spacing.md))
+            repeat(GUIDE_WINDOW_MINUTES / GUIDE_SLOT_MINUTES) { slot ->
+                Text(
+                    text = timeFormat.format(windowStart + slot * slotMillis),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NuvioTheme.colors.TextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = NuvioTheme.spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
+        ) {
+            itemsIndexed(channels, key = { index, channel -> "$index|${channel.streamUrl}" }) { _, channel ->
+                IptvListRow(onClick = { onPlay(channel) }) {
+                    Text(
+                        text = channel.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = NuvioTheme.colors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.width(GUIDE_NAME_WIDTH)
+                    )
+                    IptvGuideTimeline(
+                        programmes = programmesOf(channel),
+                        windowStart = windowStart,
+                        windowEnd = windowEnd,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val GUIDE_NAME_WIDTH = 170.dp
+
+/** Programmes of one channel as blocks whose width is their share of the time window. */
+@Composable
+private fun IptvGuideTimeline(
+    programmes: List<EpgProgramme>,
+    windowStart: Long,
+    windowEnd: Long,
+    modifier: Modifier = Modifier
+) {
+    val visible = programmes.filter { it.stopMillis > windowStart && it.startMillis < windowEnd }
+    Row(
+        modifier = modifier.height(44.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        if (visible.isEmpty()) {
+            Text(
+                text = stringResource(R.string.iptv_no_guide_data),
+                style = MaterialTheme.typography.labelMedium,
+                color = NuvioTheme.colors.TextTertiary,
+                modifier = Modifier.weight(1f)
+            )
+            return@Row
+        }
+        val now = System.currentTimeMillis()
+        var cursor = windowStart
+        visible.forEach { programme ->
+            val start = maxOf(programme.startMillis, cursor)
+            val end = minOf(programme.stopMillis, windowEnd)
+            if (end <= start) return@forEach
+            // A gap in the guide keeps its place on the timeline.
+            if (start > cursor) Spacer(modifier = Modifier.weight((start - cursor).toFloat()))
+            val onNow = now in programme.startMillis until programme.stopMillis
+            Box(
+                modifier = Modifier
+                    .weight((end - start).toFloat())
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        if (onNow) NuvioTheme.colors.Primary.copy(alpha = 0.22f)
+                        else NuvioTheme.colors.BackgroundElevated
+                    )
+                    .padding(horizontal = 8.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    text = programme.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (onNow) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            cursor = end
+        }
+        if (cursor < windowEnd) Spacer(modifier = Modifier.weight((windowEnd - cursor).toFloat()))
     }
 }

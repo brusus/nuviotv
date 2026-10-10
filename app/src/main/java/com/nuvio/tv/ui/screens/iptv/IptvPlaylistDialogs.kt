@@ -156,8 +156,8 @@ private fun IptvSquareButton(label: String, onClick: () -> Unit) {
 internal fun IptvAddPlaylistDialog(
     busy: Boolean,
     rejected: Boolean,
-    onAddM3u: (name: String, url: String, epgUrl: String) -> Unit,
-    onAddXtream: (name: String, server: String, username: String, password: String) -> Unit,
+    onAddM3u: (name: String, url: String, epgUrl: String, userAgent: String) -> Unit,
+    onAddXtream: (name: String, server: String, username: String, password: String, userAgent: String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var type by remember { mutableStateOf(IptvPlaylistType.M3U) }
@@ -166,11 +166,12 @@ internal fun IptvAddPlaylistDialog(
     var epgUrl by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var userAgent by remember { mutableStateOf("") }
 
     // Explicit focus chain: directional search is unreliable inside a dialog, and a text
     // field swallows up/down unless it hands focus on itself.
     val typeFocus = remember { FocusRequester() }
-    val fieldFocus = remember { List(4) { FocusRequester() } }
+    val fieldFocus = remember { List(5) { FocusRequester() } }
     val saveFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { typeFocus.requestFocus() } }
 
@@ -178,14 +179,16 @@ internal fun IptvAddPlaylistDialog(
         listOf(
             Triple(stringResource(R.string.iptv_playlist_field_url), url) { value: String -> url = value },
             Triple(stringResource(R.string.iptv_playlist_field_name), name) { value: String -> name = value },
-            Triple(stringResource(R.string.iptv_playlist_field_epg), epgUrl) { value: String -> epgUrl = value }
+            Triple(stringResource(R.string.iptv_playlist_field_epg), epgUrl) { value: String -> epgUrl = value },
+            Triple(stringResource(R.string.iptv_playlist_field_user_agent), userAgent) { value: String -> userAgent = value }
         )
     } else {
         listOf(
             Triple(stringResource(R.string.iptv_playlist_field_server), url) { value: String -> url = value },
             Triple(stringResource(R.string.iptv_playlist_field_username), username) { value: String -> username = value },
             Triple(stringResource(R.string.iptv_playlist_field_password), password) { value: String -> password = value },
-            Triple(stringResource(R.string.iptv_playlist_field_name), name) { value: String -> name = value }
+            Triple(stringResource(R.string.iptv_playlist_field_name), name) { value: String -> name = value },
+            Triple(stringResource(R.string.iptv_playlist_field_user_agent), userAgent) { value: String -> userAgent = value }
         )
     }
 
@@ -232,8 +235,8 @@ internal fun IptvAddPlaylistDialog(
             com.nuvio.tv.ui.components.Button(
                 onClick = {
                     if (busy) return@Button
-                    if (type == IptvPlaylistType.M3U) onAddM3u(name, url, epgUrl)
-                    else onAddXtream(name, url, username, password)
+                    if (type == IptvPlaylistType.M3U) onAddM3u(name, url, epgUrl, userAgent)
+                    else onAddXtream(name, url, username, password, userAgent)
                 },
                 modifier = Modifier.focusRequester(saveFocus)
             ) {
@@ -313,5 +316,59 @@ private fun IptvDialogTextField(
                 innerTextField()
             }
         )
+    }
+}
+
+/** Catch-up: programmes of a channel that already aired, newest first; OK plays one. */
+@Composable
+internal fun IptvArchiveDialog(
+    channelName: String,
+    programmes: List<com.nuvio.tv.domain.model.EpgProgramme>,
+    onPlay: (com.nuvio.tv.domain.model.EpgProgramme) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val firstRow = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { firstRow.requestFocus() } }
+    val timeFormat = remember { java.text.SimpleDateFormat("EEE dd/MM  HH:mm", java.util.Locale.getDefault()) }
+
+    NuvioDialog(
+        onDismiss = onDismiss,
+        title = channelName,
+        subtitle = stringResource(R.string.iptv_archive_subtitle),
+        width = 700.dp
+    ) {
+        if (programmes.isEmpty()) {
+            Text(
+                text = stringResource(R.string.iptv_archive_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = NuvioTheme.colors.TextSecondary
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
+            ) {
+                items(programmes.size) { index ->
+                    val programme = programmes[index]
+                    IptvListRow(
+                        onClick = { onPlay(programme) },
+                        modifier = if (index == 0) Modifier.focusRequester(firstRow) else Modifier
+                    ) {
+                        Text(
+                            text = timeFormat.format(programme.startMillis),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = NuvioTheme.colors.TextSecondary
+                        )
+                        Text(
+                            text = programme.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = NuvioTheme.colors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
     }
 }

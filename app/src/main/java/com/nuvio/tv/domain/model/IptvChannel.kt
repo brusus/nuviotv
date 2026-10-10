@@ -8,5 +8,9 @@ data class IptvChannel(
     val groupTitle: String,
     val streamUrl: String,
     val epgId: String?,
-    val headers: Map<String, String>? = null
+    val headers: Map<String, String>? = null,
+    /** Audio-only stream (`radio="true"` in the playlist, or an Xtream radio stream). */
+    val isRadio: Boolean = false,
+    /** Days of past programmes the provider keeps for this channel (Xtream catch-up), 0 if none. */
+    val archiveDays: Int = 0
 )

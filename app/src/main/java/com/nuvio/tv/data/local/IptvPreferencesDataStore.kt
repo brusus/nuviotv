@@ -41,6 +41,8 @@ class IptvPreferencesDataStore @Inject constructor(
     private val favoriteChannelsKey = stringSetPreferencesKey("favorite_channels")
     private val recentChannelsKey = stringPreferencesKey("recent_channels")
     private val playlistsKey = stringPreferencesKey("playlists")
+    private val hiddenCategoriesKey = stringSetPreferencesKey("hidden_categories")
+    private val favoriteVodKey = stringSetPreferencesKey("favorite_vod")
     private val activePlaylistIdKey = stringPreferencesKey("active_playlist_id")
 
     /** True when the IPTV screen shows iptv-org's free channels instead of the user's playlist. */
@@ -96,6 +98,32 @@ class IptvPreferencesDataStore @Inject constructor(
             val current = prefs[recentChannelsKey].orEmpty().split('\n').filter { it.isNotBlank() }
             result = (listOf(url) + current.filter { it != url }).take(MAX_RECENT_CHANNELS)
             prefs[recentChannelsKey] = result.joinToString("\n")
+        }
+        return result
+    }
+
+    // --- Hidden categories and favourite titles ------------------------------------------
+    //
+    // Both are sets of opaque keys built by the repository (playlist + kind + id), so one
+    // store serves live groups, movie categories and series categories of every playlist.
+
+    suspend fun getHiddenCategoryKeys(): Set<String> = store().data.first()[hiddenCategoriesKey] ?: emptySet()
+
+    suspend fun toggleHiddenCategory(key: String): Set<String> = toggleInSet(hiddenCategoriesKey, key)
+
+    suspend fun getFavoriteVodKeys(): Set<String> = store().data.first()[favoriteVodKey] ?: emptySet()
+
+    suspend fun toggleFavoriteVod(key: String): Set<String> = toggleInSet(favoriteVodKey, key)
+
+    private suspend fun toggleInSet(
+        prefKey: androidx.datastore.preferences.core.Preferences.Key<Set<String>>,
+        value: String
+    ): Set<String> {
+        var result: Set<String> = emptySet()
+        store().edit { prefs ->
+            val current = prefs[prefKey] ?: emptySet()
+            result = if (value in current) current - value else current + value
+            prefs[prefKey] = result
         }
         return result
     }
@@ -161,6 +189,7 @@ class IptvPreferencesDataStore @Inject constructor(
                 addProperty("username", playlist.username)
                 addProperty("password", playlist.password)
                 addProperty("epgUrl", playlist.epgUrl)
+                addProperty("userAgent", playlist.userAgent)
             })
         }
         return array.toString()
@@ -180,7 +209,8 @@ class IptvPreferencesDataStore @Inject constructor(
                     url = text("url").ifBlank { return@mapNotNull null },
                     username = text("username"),
                     password = text("password"),
-                    epgUrl = text("epgUrl")
+                    epgUrl = text("epgUrl"),
+                    userAgent = text("userAgent")
                 )
             }
         }.getOrDefault(emptyList())
