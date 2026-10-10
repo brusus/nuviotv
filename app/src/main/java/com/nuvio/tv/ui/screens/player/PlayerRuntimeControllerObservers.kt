@@ -813,7 +813,16 @@ internal fun PlayerRuntimeController.maybeScheduleStartupTimeoutWatchdog() {
             allowEngineFailover = true
         )
         if (!switchedEngine) {
-            val timeoutError = context.getString(com.nuvio.tv.R.string.player_error_startup_timeout)
+            // No first frame because this device has no decoder able to handle the video
+            // (typically 4K HEVC 10-bit on a box without hardware support): say so, instead
+            // of blaming the connection.
+            val decoderCannotHandleVideo =
+                currentVideoTrackBestSupport == androidx.media3.common.C.FORMAT_EXCEEDS_CAPABILITIES ||
+                    currentVideoTrackBestSupport == androidx.media3.common.C.FORMAT_UNSUPPORTED_SUBTYPE
+            val timeoutError = context.getString(
+                if (decoderCannotHandleVideo) com.nuvio.tv.R.string.player_error_video_not_decodable
+                else com.nuvio.tv.R.string.player_error_startup_timeout
+            )
             _uiState.update {
                 it.copy(
                     playbackError = PlaybackError(PlaybackErrorKind.STARTUP_TIMEOUT, timeoutError, generation),

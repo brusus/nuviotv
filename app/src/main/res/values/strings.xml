@@ -1782,6 +1782,7 @@
     <string name="player_more_open_external">Open in External Player</string>
     <string name="player_error_no_stream_url">No stream URL provided</string>
     <string name="player_error_startup_timeout">Stream took too long to start. Check your connection and try again.</string>
+    <string name="player_error_video_not_decodable">This device cannot decode this video (for example 4K HEVC or HDR). Try a lower-resolution version.</string>
 
 
     <string name="stream_info_section_source">SOURCE</string>
