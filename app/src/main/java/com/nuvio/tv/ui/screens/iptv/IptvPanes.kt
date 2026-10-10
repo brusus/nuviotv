@@ -270,11 +270,35 @@ private fun IptvChannelList(
         return
     }
 
+    // "All" with several groups shows them as folders: only the titles at first, the
+    // channels of a group appear under its title once it is opened. Several can stay open.
+    // A search always gets the flat list of matches.
+    val useFolders = uiState.selectedTab == IptvTab.ALL && uiState.searchQuery.isBlank() &&
+        remember(channels) { channels.asSequence().map { it.groupTitle }.distinct().take(2).count() > 1 }
+    val rows: List<IptvListEntry> = remember(channels, useFolders, uiState.expandedGroups) {
+        if (!useFolders) {
+            channels.mapIndexed { index, channel -> IptvListEntry.Channel(index, channel) }
+        } else {
+            // Groups in the order the playlist lists them, each keeping its channels' numbers.
+            val byGroup = LinkedHashMap<String, MutableList<IptvListEntry.Channel>>()
+            channels.forEachIndexed { index, channel ->
+                byGroup.getOrPut(channel.groupTitle) { mutableListOf() }.add(IptvListEntry.Channel(index, channel))
+            }
+            buildList {
+                byGroup.forEach { (group, entries) ->
+                    val expanded = group in uiState.expandedGroups
+                    add(IptvListEntry.Folder(group, entries.size, expanded))
+                    if (expanded) addAll(entries)
+                }
+            }
+        }
+    }
+    fun rowIndexOf(url: String?): Int =
+        if (url == null) -1 else rows.indexOfFirst { it is IptvListEntry.Channel && it.channel.streamUrl == url }
+
     val listState = rememberLazyListState()
     val lastChannelFocus = remember { FocusRequester() }
-    val lastChannelIndex = remember(channels, uiState.lastChannelUrl) {
-        channels.indexOfFirst { it.streamUrl == uiState.lastChannelUrl }
-    }
+    val lastChannelIndex = remember(rows, uiState.lastChannelUrl) { rowIndexOf(uiState.lastChannelUrl) }
     // Rows before the channels (the "back to groups" row) shift the list positions.
     val headerRows = if (insideGroup) 1 else 0
 
@@ -286,10 +310,14 @@ private fun IptvChannelList(
     LaunchedEffect(uiState.searchQuery) {
         if (uiState.searchQuery.isNotEmpty()) searchUsed = true
     }
+    // Once per channel watched: opening or closing a folder also moves that channel to
+    // another row, and must not drag the focus back to it.
+    var restored by remember(uiState.lastChannelUrl, uiState.selectedTab) { mutableStateOf(false) }
     LaunchedEffect(lastChannelIndex, uiState.selectedTab) {
-        if (lastChannelIndex >= 0 && uiState.searchQuery.isEmpty() && !searchUsed &&
+        if (lastChannelIndex >= 0 && !restored && uiState.searchQuery.isEmpty() && !searchUsed &&
             uiState.selectedTab == IptvTab.ALL
         ) {
+            restored = true
             listState.scrollToItem(lastChannelIndex + headerRows)
             withFrameNanos { }
             runCatching { lastChannelFocus.requestFocus() }
@@ -298,9 +326,7 @@ private fun IptvChannelList(
 
     // Channel number typed on the remote: scroll to that channel and put the focus on it.
     val jumpFocus = remember { FocusRequester() }
-    val jumpIndex = remember(channels, uiState.jumpToChannelUrl) {
-        uiState.jumpToChannelUrl?.let { url -> channels.indexOfFirst { it.streamUrl == url } } ?: -1
-    }
+    val jumpIndex = remember(rows, uiState.jumpToChannelUrl) { rowIndexOf(uiState.jumpToChannelUrl) }
     LaunchedEffect(uiState.jumpToChannelUrl) {
         if (jumpIndex >= 0) {
             listState.scrollToItem(jumpIndex + headerRows)
@@ -350,9 +376,38 @@ private fun IptvChannelList(
         }
         // Index in the key: a playlist can list the same channel twice, and duplicate keys
         // crash the list.
-        itemsIndexed(channels, key = { index, channel -> "$index|${channel.id}|${channel.streamUrl}" }) { index, channel ->
+        itemsIndexed(
+            rows,
+            key = { _, entry ->
+                when (entry) {
+                    is IptvListEntry.Folder -> "folder|${entry.group}"
+                    is IptvListEntry.Channel -> "${entry.index}|${entry.channel.id}|${entry.channel.streamUrl}"
+                }
+            }
+        ) { index, entry ->
+            if (entry is IptvListEntry.Folder) {
+                IptvListRow(onClick = { viewModel.toggleGroupExpanded(entry.group) }, accent = entry.expanded) {
+                    Text(
+                        text = (if (entry.expanded) "▾  " else "▸  ") +
+                            entry.group.ifBlank { stringResource(R.string.iptv_group_untitled) },
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = NuvioTheme.colors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = entry.count.toString(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NuvioTheme.colors.TextSecondary
+                    )
+                }
+                return@itemsIndexed
+            }
+            val channel = (entry as IptvListEntry.Channel).channel
             IptvChannelRow(
-                number = index + 1,
+                number = entry.index + 1,
                 channel = channel,
                 nowPlaying = viewModel.nowPlayingTitle(channel),
                 isFavorite = channel.streamUrl in uiState.favoriteUrls,
@@ -384,6 +439,14 @@ private fun IptvChannelList(
         )
     }
     }
+}
+
+/** A row of the channel list: a group title that opens and closes, or a channel. */
+private sealed interface IptvListEntry {
+    data class Folder(val group: String, val count: Int, val expanded: Boolean) : IptvListEntry
+
+    /** [index] is the channel's position in the whole list, i.e. its number minus one. */
+    data class Channel(val index: Int, val channel: IptvChannel) : IptvListEntry
 }
 
 /** A focusable list row: highlighted background and focus ring like the rest of the app. */

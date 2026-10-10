@@ -89,6 +89,8 @@ data class IptvUiState(
     val searchMovies: List<IptvVodItem> = emptyList(),
     val searchSeries: List<IptvVodItem> = emptyList(),
     val searchLoading: Boolean = false,
+    /** Groups opened in the folder view of the All tab. */
+    val expandedGroups: Set<String> = emptySet(),
     /** Channel whose past programmes (catch-up) are listed. */
     val archiveChannel: IptvChannel? = null
 ) {
@@ -244,6 +246,10 @@ class IptvViewModel @Inject constructor(
                             lastChannelUrl = lastChannel,
                             favoriteUrls = favorites,
                             recentUrls = recents,
+                            // The folder of the last channel watched opens by itself, so the
+                            // list can come back to it.
+                            expandedGroups = it.expandedGroups +
+                                listOfNotNull(channels.firstOrNull { c -> c.streamUrl == lastChannel }?.groupTitle),
                             // Keep the preview on a channel of the list just loaded.
                             previewChannel = it.previewChannel?.takeIf { p -> channels.any { c -> c.streamUrl == p.streamUrl } }
                                 ?: channels.firstOrNull { c -> c.streamUrl == lastChannel }
@@ -409,6 +415,7 @@ class IptvViewModel @Inject constructor(
                 searchMovies = emptyList(),
                 searchSeries = emptyList(),
                 archiveChannel = null,
+                expandedGroups = emptySet(),
                 typedNumber = "",
                 jumpToChannelUrl = null
             )
@@ -541,6 +548,7 @@ class IptvViewModel @Inject constructor(
             _uiState.update {
                 it.copy(
                     typedNumber = "",
+                    expandedGroups = it.expandedGroups + listOfNotNull(channel?.groupTitle),
                     jumpToChannelUrl = channel?.streamUrl ?: it.jumpToChannelUrl,
                     previewChannel = channel ?: it.previewChannel
                 )
@@ -597,6 +605,12 @@ class IptvViewModel @Inject constructor(
                     )
                 )
             }
+        }
+    }
+
+    fun toggleGroupExpanded(group: String) {
+        _uiState.update {
+            it.copy(expandedGroups = if (group in it.expandedGroups) it.expandedGroups - group else it.expandedGroups + group)
         }
     }
 
