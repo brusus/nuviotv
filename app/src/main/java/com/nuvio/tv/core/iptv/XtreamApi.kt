@@ -45,6 +45,11 @@ object XtreamApi {
             extra.forEach { (key, value) -> append('&').append(key).append('=').append(enc(value)) }
         }
 
+    private val ACCOUNT_STREAM_PATH = Regex("/(movie|series|live|timeshift)/[^/]+/[^/]+/")
+
+    /** True for the stream addresses this API builds (they carry the account in the path). */
+    fun isAccountStreamUrl(url: String): Boolean = ACCOUNT_STREAM_PATH.containsMatchIn(url)
+
     fun xmltvUrl(playlist: IptvPlaylist): String =
         "${baseUrl(playlist.url)}/xmltv.php?username=${enc(playlist.username)}&password=${enc(playlist.password)}"
 
@@ -125,7 +130,8 @@ object XtreamApi {
                 addedEpochSeconds = obj.str("added")?.toLongOrNull() ?: 0L,
                 rating = obj.str("rating")?.takeIf { it.isNotBlank() && it != "0" },
                 containerExtension = obj.str("container_extension"),
-                kind = IptvVodKind.MOVIE
+                kind = IptvVodKind.MOVIE,
+                tmdbId = obj.tmdbId()
             )
         }
 
@@ -141,7 +147,8 @@ object XtreamApi {
                 addedEpochSeconds = obj.str("last_modified")?.toLongOrNull() ?: 0L,
                 rating = obj.str("rating")?.takeIf { it.isNotBlank() && it != "0" },
                 containerExtension = null,
-                kind = IptvVodKind.SERIES
+                kind = IptvVodKind.SERIES,
+                tmdbId = obj.tmdbId()
             )
         }
 
@@ -192,7 +199,8 @@ object XtreamApi {
             duration = first("duration"),
             cast = first("cast", "actors"),
             director = first("director"),
-            backdropUrl = backdrop
+            backdropUrl = backdrop,
+            videoHeight = (info.get("video") as? JsonObject)?.str("height")?.toIntOrNull() ?: 0
         )
     }
 
@@ -221,6 +229,9 @@ object XtreamApi {
     private fun array(json: String): JsonArray = parse(json) as? JsonArray ?: JsonArray()
 
     private fun JsonObject.obj(key: String): JsonObject? = get(key) as? JsonObject
+
+    private fun JsonObject.tmdbId(): String? =
+        (str("tmdb") ?: str("tmdb_id"))?.trim()?.takeIf { it.isNotEmpty() && it != "0" }
 
     /** A field as text whether the provider sent a string or a number; null when absent. */
     private fun JsonObject.str(key: String): String? = get(key)?.asStringOrNull()

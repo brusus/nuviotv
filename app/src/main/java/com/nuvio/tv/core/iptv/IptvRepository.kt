@@ -167,18 +167,31 @@ class IptvRepository @Inject constructor(
         val items: List<IptvVodItem>
     )
 
-    private val vodCaches = mutableMapOf<IptvVodKind, VodCache>()
+    private val vodCaches = java.util.concurrent.ConcurrentHashMap<String, VodCache>()
 
     /** Categories and titles of the active Xtream account, cached for the session. */
     suspend fun getVod(
         kind: IptvVodKind,
         forceRefresh: Boolean = false
-    ): Result<Pair<List<IptvVodCategory>, List<IptvVodItem>>> = withContext(Dispatchers.IO) {
+    ): Result<Pair<List<IptvVodCategory>, List<IptvVodItem>>> {
         val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }
-            ?: return@withContext Result.failure(IllegalStateException("not_xtream"))
-        val key = "${playlist.id}:${playlist.url}:${playlist.username}"
-        val cached = vodCaches[kind]
-        if (!forceRefresh && cached != null && cached.key == key) {
+            ?: return Result.failure(IllegalStateException("not_xtream"))
+        return getVodOf(playlist, kind, forceRefresh)
+    }
+
+    /** Every saved Xtream account, whichever playlist is the one in use. */
+    suspend fun getXtreamPlaylists(): List<IptvPlaylist> =
+        preferences.getPlaylists().filter { it.type == IptvPlaylistType.XTREAM }
+
+    /** Catalogue of a given Xtream account, cached for the session per account and kind. */
+    suspend fun getVodOf(
+        playlist: IptvPlaylist,
+        kind: IptvVodKind,
+        forceRefresh: Boolean = false
+    ): Result<Pair<List<IptvVodCategory>, List<IptvVodItem>>> = withContext(Dispatchers.IO) {
+        val key = "$kind:${playlist.id}:${playlist.url}:${playlist.username}"
+        val cached = vodCaches[key]
+        if (!forceRefresh && cached != null) {
             return@withContext Result.success(cached.categories to cached.items)
         }
         try {
@@ -189,7 +202,7 @@ class IptvRepository @Inject constructor(
             val categories = XtreamApi.parseCategories(fetchText(XtreamApi.apiUrl(playlist, categoriesAction), playlist.userAgent))
             val body = fetchText(XtreamApi.apiUrl(playlist, itemsAction), playlist.userAgent)
             val items = if (kind == IptvVodKind.MOVIE) XtreamApi.parseMovies(body) else XtreamApi.parseSeries(body)
-            vodCaches[kind] = VodCache(key, categories, items)
+            vodCaches[key] = VodCache(key, categories, items)
             Result.success(categories to items)
         } catch (e: Exception) {
             Result.failure(e)
@@ -197,10 +210,17 @@ class IptvRepository @Inject constructor(
     }
 
     /** Plot and credits of a movie, or of a series together with its episodes (one request). */
-    suspend fun getVodInfo(item: IptvVodItem): Result<Pair<IptvVodDetails, List<IptvSeriesEpisode>>> =
+    suspend fun getVodInfo(item: IptvVodItem): Result<Pair<IptvVodDetails, List<IptvSeriesEpisode>>> {
+        val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }
+            ?: return Result.failure(IllegalStateException("not_xtream"))
+        return getVodInfoOf(playlist, item)
+    }
+
+    suspend fun getVodInfoOf(
+        playlist: IptvPlaylist,
+        item: IptvVodItem
+    ): Result<Pair<IptvVodDetails, List<IptvSeriesEpisode>>> =
         withContext(Dispatchers.IO) {
-            val playlist = getActivePlaylist()?.takeIf { it.type == IptvPlaylistType.XTREAM }
-                ?: return@withContext Result.failure(IllegalStateException("not_xtream"))
             runCatching {
                 if (item.kind == IptvVodKind.MOVIE) {
                     val body = fetchText(

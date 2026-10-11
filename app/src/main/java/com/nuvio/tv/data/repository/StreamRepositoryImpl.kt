@@ -44,6 +44,7 @@ import java.security.MessageDigest
 import javax.inject.Inject
 
 private const val TAG = "StreamRepositoryImpl"
+private const val IPTV_PROVIDER_NAME = "IPTV"
 
 class StreamRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -54,7 +55,8 @@ class StreamRepositoryImpl @Inject constructor(
     private val debridSettingsDataStore: DebridSettingsDataStore,
     private val tmdbService: TmdbService,
     private val debridStreamPresentation: DebridStreamPresentation,
-    private val localDebridAvailabilityService: LocalDebridAvailabilityService
+    private val localDebridAvailabilityService: LocalDebridAvailabilityService,
+    private val iptvStreamSource: com.nuvio.tv.core.iptv.IptvStreamSource
 ) : StreamRepository {
     private val streamSearchSessions = StreamSearchSessionCache()
     private val localPluginSearchPaused = MutableStateFlow(false)
@@ -247,12 +249,17 @@ class StreamRepositoryImpl @Inject constructor(
 
                 launch {
                     try {
-                        if (!hasCompatiblePlugins) return@launch
+                        kotlinx.coroutines.coroutineScope {
+                        // The saved IPTV accounts answer as one more provider. A child of this
+                        // scope, so the result channel is not closed before it has reported.
+                        launch { streamIptvAccounts(videoId, type, season, episode, resultChannel) }
+
+                        if (!hasCompatiblePlugins) return@coroutineScope
 
                         val tmdbId = tmdbService.ensureTmdbId(videoId, type)
                         Log.d(TAG, "Video ID: $videoId -> TMDB ID: $tmdbId (type: $type)")
                         val pluginRequest = buildPluginRequest(tmdbId, type, videoId)
-                            ?: return@launch
+                            ?: return@coroutineScope
                         val (pluginSeason, pluginEpisode) = resolvePluginSeasonEpisode(
                             videoId = videoId,
                             season = season,
@@ -273,6 +280,7 @@ class StreamRepositoryImpl @Inject constructor(
                                 }
                             }
                             .first()
+                        }
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e
                         Log.e(TAG, "Plugin execution failed: ${e.message}")
@@ -494,6 +502,50 @@ class StreamRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Log.e(TAG, "Failed to stream plugins: ${e.message}", e)
+        }
+    }
+
+    /** Looks the title up in the saved Xtream accounts and reports what they can play. */
+    private suspend fun streamIptvAccounts(
+        videoId: String,
+        type: String,
+        season: Int?,
+        episode: Int?,
+        resultChannel: Channel<AddonStreams>
+    ) {
+        try {
+            val matches = iptvStreamSource.findStreams(videoId, type, season, episode)
+            if (matches.isEmpty()) return
+            val streams = matches.map { match ->
+                val quality = match.quality
+                Stream(
+                    name = if (quality != null) "IPTV - $quality" else "IPTV",
+                    title = match.title,
+                    url = match.url,
+                    addonName = IPTV_PROVIDER_NAME,
+                    addonLogo = null,
+                    description = match.playlistName,
+                    behaviorHints = StreamBehaviorHints(
+                        notWebReady = null,
+                        // Same account and quality: the next episode can follow by itself.
+                        bingeGroup = "iptv|${match.playlistId}|${quality ?: "unknown"}",
+                        countryWhitelist = null,
+                        proxyHeaders = match.headers?.let { ProxyHeaders(request = it, response = null) }
+                    ),
+                    infoHash = null,
+                    fileIdx = null,
+                    ytId = null,
+                    externalUrl = null,
+                    quality = quality,
+                    qualityValue = parseQualityValue(quality),
+                    subtitles = emptyList()
+                )
+            }
+            resultChannel.send(AddonStreams(addonName = IPTV_PROVIDER_NAME, addonLogo = null, streams = streams))
+            Log.d(TAG, "IPTV accounts offered ${streams.size} stream(s)")
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Log.w(TAG, "IPTV lookup failed: ${e.message}")
         }
     }
 

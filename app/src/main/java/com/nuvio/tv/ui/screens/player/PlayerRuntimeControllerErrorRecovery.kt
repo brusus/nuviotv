@@ -12,6 +12,9 @@ import kotlinx.coroutines.launch
 
 private const val MAX_AUTO_RETRIES = 2
 private const val RETRY_DELAY_MS = 1_500L
+private const val HTTP_CONNECTION_LIMIT = 509
+private const val MAX_CONNECTION_LIMIT_RETRIES = 4
+private const val CONNECTION_LIMIT_RETRY_DELAY_MS = 4_000L
 private const val STABLE_PROGRESS_RESET_DELAY_MS = 5_000L
 
 internal fun PlayerRuntimeController.showRecoveryOverlay() {
@@ -201,6 +204,7 @@ internal fun PlaybackException.toDisplayMessage(context: android.content.Context
             404 -> context.getString(com.nuvio.tv.R.string.player_error_stream_removed)
             410 -> context.getString(com.nuvio.tv.R.string.player_error_stream_expired)
             429 -> context.getString(com.nuvio.tv.R.string.player_error_stream_rate_limited)
+            509 -> context.getString(com.nuvio.tv.R.string.player_error_stream_connection_limit)
             500, 502, 503, 504 -> context.getString(com.nuvio.tv.R.string.player_error_stream_unavailable)
             else -> ""
         }
@@ -286,15 +290,21 @@ internal fun PlayerRuntimeController.attemptAutoRetry(
     detailedError: String
 ): Boolean {
     if (!isRetryablePlaybackError(error)) return false
-    if (errorRetryCount >= MAX_AUTO_RETRIES) return false
+    // HTTP 509: the provider's connection limit (IPTV accounts usually allow one stream).
+    // The slot is often still held by our own previous connection, or by the one just
+    // closed by a preview, and frees up a few seconds later.
+    val connectionLimit = error.findInvalidResponseCodeException()?.responseCode == HTTP_CONNECTION_LIMIT
+    val maxRetries = if (connectionLimit) MAX_CONNECTION_LIMIT_RETRIES else MAX_AUTO_RETRIES
+    if (errorRetryCount >= maxRetries) return false
 
     val paused = userPausedManually
     val attempt = errorRetryCount
     errorRetryCount++
+    val retryDelayMs = if (connectionLimit) CONNECTION_LIMIT_RETRY_DELAY_MS * (attempt + 1) else RETRY_DELAY_MS
 
     Log.w(
         PlayerRuntimeController.TAG,
-        "Auto-retry ${attempt + 1}/$MAX_AUTO_RETRIES after ${RETRY_DELAY_MS}ms for: $detailedError"
+        "Auto-retry ${attempt + 1}/$maxRetries after ${retryDelayMs}ms for: $detailedError"
     )
 
     // Capture the current position so we can resume after re-init.
@@ -306,9 +316,21 @@ internal fun PlayerRuntimeController.attemptAutoRetry(
         _uiState.update {
             it.copy(
                 playbackError = null,
-                showLoadingOverlay = if (isFirstAttempt) false else it.loadingOverlayEnabled,
+                showLoadingOverlay = if (isFirstAttempt && !connectionLimit) false else it.loadingOverlayEnabled,
                 showPauseOverlay = false
             )
+        }
+
+        if (connectionLimit) {
+            // Close our own connection first, then wait: re-preparing the same player would
+            // open the new request while the old one still counts against the limit.
+            releasePlayer(flushPlaybackState = false)
+            if (savedPosition > 0L) {
+                _uiState.update { it.copy(pendingSeekPosition = savedPosition) }
+            }
+            delay(retryDelayMs)
+            initializePlayer(currentStreamUrl, currentHeaders, startPaused = paused)
+            return@launch
         }
 
         delay(RETRY_DELAY_MS)

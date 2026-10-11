@@ -174,7 +174,10 @@ class StreamRepositoryPluginIsolationTest {
                 debridSettingsDataStore = debridSettingsDataStore,
                 tmdbService = tmdbService,
                 debridStreamPresentation = presentation,
-                localDebridAvailabilityService = availability
+                localDebridAvailabilityService = availability,
+                iptvStreamSource = mockk<com.nuvio.tv.core.iptv.IptvStreamSource>().also {
+                    coEvery { it.findStreams(any(), any(), any(), any()) } returns emptyList()
+                }
             ),
             api = api,
             tmdbService = tmdbService,

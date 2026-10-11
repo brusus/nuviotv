@@ -50,7 +50,11 @@ internal suspend fun PlayerRuntimeController.fetchAddonSubtitlesNow(
     _uiState.update { it.copy(installedSubtitleAddonOrder = installedAddonOrder) }
 
     // Compute hash lazily for providers that support OpenSubtitles-style matching.
-    if (currentVideoHash == null && currentStreamUrl.isNotBlank()) {
+    // Not for IPTV accounts: the hash needs extra range requests on the stream URL, and a
+    // provider that allows one connection answers the player with HTTP 509 because of them.
+    if (currentVideoHash == null && currentStreamUrl.isNotBlank() &&
+        !com.nuvio.tv.core.iptv.XtreamApi.isAccountStreamUrl(currentStreamUrl)
+    ) {
         val result = OpenSubtitlesHasher.compute(currentStreamUrl, currentHeaders)
         if (result != null) {
             currentVideoHash = result.hash

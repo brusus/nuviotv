@@ -28,7 +28,9 @@ data class IptvVodDetails(
     val duration: String = "",
     val cast: String = "",
     val director: String = "",
-    val backdropUrl: String? = null
+    val backdropUrl: String? = null,
+    /** Height of the video in pixels when the provider reports it, 0 otherwise. */
+    val videoHeight: Int = 0
 )
 
 enum class IptvVodKind { MOVIE, SERIES }
@@ -46,7 +48,9 @@ data class IptvVodItem(
     val rating: String?,
     /** File extension of a movie ("mp4", "mkv"); null for a series. */
     val containerExtension: String?,
-    val kind: IptvVodKind
+    val kind: IptvVodKind,
+    /** TMDB id when the provider publishes it; lets a title be matched exactly. */
+    val tmdbId: String? = null
 )
 
 data class IptvSeriesEpisode(
