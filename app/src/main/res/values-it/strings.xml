@@ -1329,6 +1329,7 @@
 <string name="iptv_preview_hint">OK: schermo intero  ·  Freccia destra: stella dei preferiti</string>
 <string name="iptv_playlists_title">Liste IPTV</string>
 <string name="iptv_playlist_add">Aggiungi lista</string>
+<string name="iptv_playlist_edit">Modifica lista</string>
 <string name="iptv_playlist_save">Salva</string>
 <string name="iptv_playlist_checking">Verifica…</string>
 <string name="iptv_playlist_field_url">Indirizzo della lista (m3u, m3u8)</string>

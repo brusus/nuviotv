@@ -44,7 +44,7 @@ object NuvioExoPlayerPerformanceHelper {
         DEFAULT_NUVIO_CONNECTION_POOL_SIZE,
         3,
         java.util.concurrent.TimeUnit.MINUTES
-    )
+    ).also { com.nuvio.tv.core.network.ConnectionPoolRegistry.track(it) }
         private set
 
     // ─── Constants ────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ object NuvioExoPlayerPerformanceHelper {
                 connectionPoolSize,
                 3,
                 java.util.concurrent.TimeUnit.MINUTES
-            )
+            ).also { com.nuvio.tv.core.network.ConnectionPoolRegistry.track(it) }
         }
     }
 

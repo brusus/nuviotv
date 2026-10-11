@@ -150,6 +150,9 @@ class IptvRepository @Inject constructor(
     suspend fun addPlaylist(playlist: IptvPlaylist) {
         preferences.addPlaylist(playlist)
         preferences.setActivePlaylistId(playlist.id)
+        // Saving over an existing playlist may change its server or login.
+        vodCaches.clear()
+        vodInfoCache.clear()
     }
 
     suspend fun removePlaylist(id: String) = preferences.removePlaylist(id)
@@ -168,6 +171,8 @@ class IptvRepository @Inject constructor(
     )
 
     private val vodCaches = java.util.concurrent.ConcurrentHashMap<String, VodCache>()
+    private val vodInfoCache =
+        java.util.concurrent.ConcurrentHashMap<String, Pair<IptvVodDetails, List<IptvSeriesEpisode>>>()
 
     /** Categories and titles of the active Xtream account, cached for the session. */
     suspend fun getVod(
@@ -221,6 +226,10 @@ class IptvRepository @Inject constructor(
         item: IptvVodItem
     ): Result<Pair<IptvVodDetails, List<IptvSeriesEpisode>>> =
         withContext(Dispatchers.IO) {
+            // Kept for the session: the same title is asked again by the player's source list
+            // while the account is busy streaming, when the provider may not answer.
+            val cacheKey = "${item.kind}:${playlist.id}:${playlist.username}:${item.id}"
+            vodInfoCache[cacheKey]?.let { return@withContext Result.success(it) }
             runCatching {
                 if (item.kind == IptvVodKind.MOVIE) {
                     val body = fetchText(
@@ -235,7 +244,7 @@ class IptvRepository @Inject constructor(
                     )
                     XtreamApi.parseVodDetails(body) to XtreamApi.parseSeriesEpisodes(body)
                 }
-            }
+            }.onSuccess { vodInfoCache[cacheKey] = it }
         }
 
     /** Headers the player must send for this playlist's streams (its custom User-Agent). */
@@ -332,7 +341,8 @@ class IptvRepository @Inject constructor(
                 return@withContext cached
             }
             try {
-                val request = Request.Builder().url(url).build()
+                // Providers that only answer to a given player name check it on the guide too.
+                val request = Request.Builder().url(url).withUserAgent(playlist?.userAgent.orEmpty()).build()
                 httpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) return@withContext emptyMap()
                     val stream = response.body?.byteStream() ?: return@withContext emptyMap()

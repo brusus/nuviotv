@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.R
+import com.nuvio.tv.data.local.IptvPreferencesDataStore
 import com.nuvio.tv.domain.model.IptvPlaylist
 import com.nuvio.tv.domain.model.IptvPlaylistType
 import com.nuvio.tv.ui.components.NuvioDialog
@@ -57,13 +58,14 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 internal fun IptvPlaylist.displayName(): String =
     name.ifBlank { stringResource(R.string.iptv_source_personal) }
 
-/** Saved playlists: OK switches to one, the button beside it removes it. */
+/** Saved playlists: OK switches to one, the buttons beside it edit or remove it. */
 @Composable
 internal fun IptvPlaylistsDialog(
     playlists: List<IptvPlaylist>,
     activeId: String?,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onEdit: (String) -> Unit,
     onAdd: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -113,6 +115,10 @@ internal fun IptvPlaylistsDialog(
                             Text(text = "✓", style = MaterialTheme.typography.bodyLarge, color = NuvioTheme.colors.Primary)
                         }
                     }
+                    // The playlist from the old settings screen is edited there.
+                    if (playlist.id != IptvPreferencesDataStore.LEGACY_PLAYLIST_ID) {
+                        IptvSquareButton(label = "✎", onClick = { onEdit(playlist.id) })
+                    }
                     IptvSquareButton(label = "✕", onClick = { onDelete(playlist.id) })
                 }
             }
@@ -151,22 +157,26 @@ private fun IptvSquareButton(label: String, onClick: () -> Unit) {
     }
 }
 
-/** Add a playlist: an M3U address, or an Xtream Codes account (checked before saving). */
+/**
+ * Add a playlist: an M3U address, or an Xtream Codes account (checked before saving).
+ * With [editing] the fields start from the saved values and saving replaces that playlist.
+ */
 @Composable
 internal fun IptvAddPlaylistDialog(
     busy: Boolean,
     rejected: Boolean,
+    editing: IptvPlaylist?,
     onAddM3u: (name: String, url: String, epgUrl: String, userAgent: String) -> Unit,
     onAddXtream: (name: String, server: String, username: String, password: String, userAgent: String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var type by remember { mutableStateOf(IptvPlaylistType.M3U) }
-    var name by remember { mutableStateOf("") }
-    var url by remember { mutableStateOf("") }
-    var epgUrl by remember { mutableStateOf("") }
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var userAgent by remember { mutableStateOf("") }
+    var type by remember { mutableStateOf(editing?.type ?: IptvPlaylistType.M3U) }
+    var name by remember { mutableStateOf(editing?.name.orEmpty()) }
+    var url by remember { mutableStateOf(editing?.url.orEmpty()) }
+    var epgUrl by remember { mutableStateOf(editing?.epgUrl.orEmpty()) }
+    var username by remember { mutableStateOf(editing?.username.orEmpty()) }
+    var password by remember { mutableStateOf(editing?.password.orEmpty()) }
+    var userAgent by remember { mutableStateOf(editing?.userAgent.orEmpty()) }
 
     // Explicit focus chain: directional search is unreliable inside a dialog, and a text
     // field swallows up/down unless it hands focus on itself.
@@ -194,7 +204,7 @@ internal fun IptvAddPlaylistDialog(
 
     NuvioDialog(
         onDismiss = onDismiss,
-        title = stringResource(R.string.iptv_playlist_add),
+        title = stringResource(if (editing != null) R.string.iptv_playlist_edit else R.string.iptv_playlist_add),
         subtitle = null,
         width = 680.dp
     ) {

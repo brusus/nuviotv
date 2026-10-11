@@ -202,7 +202,7 @@ class CloudflareChallengeSolver(private val context: Context) {
                 // unhandled that takes the whole app down, or leaves a dead page holding
                 // the remote's focus until the timeout: end the check instead.
                 override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-                    Log.w(TAG, "WebView renderer gone during the challenge for $host (crashed=${detail?.didCrash()})")
+                    Log.w(TAG, "WebView renderer gone during the challenge for $host")
                     rendererGone = true
                     return true
                 }

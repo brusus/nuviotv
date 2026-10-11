@@ -820,9 +820,7 @@ internal fun PlayerRuntimeController.maybeScheduleStartupTimeoutWatchdog() {
             // No first frame because this device has no decoder able to handle the video
             // (typically 4K HEVC 10-bit on a box without hardware support): say so, instead
             // of blaming the connection.
-            val decoderCannotHandleVideo =
-                currentVideoTrackBestSupport == androidx.media3.common.C.FORMAT_EXCEEDS_CAPABILITIES ||
-                    currentVideoTrackBestSupport == androidx.media3.common.C.FORMAT_UNSUPPORTED_SUBTYPE
+            val decoderCannotHandleVideo = isDecoderLimit(currentVideoTrackBestSupport)
             val timeoutError = context.getString(
                 if (decoderCannotHandleVideo) com.nuvio.tv.R.string.player_error_video_not_decodable
                 else com.nuvio.tv.R.string.player_error_startup_timeout
@@ -837,6 +835,12 @@ internal fun PlayerRuntimeController.maybeScheduleStartupTimeoutWatchdog() {
         }
     }
 }
+
+/** True when the selected video track is beyond what this device's decoders can handle. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+private fun isDecoderLimit(formatSupport: Int): Boolean =
+    formatSupport == androidx.media3.common.C.FORMAT_EXCEEDS_CAPABILITIES ||
+        formatSupport == androidx.media3.common.C.FORMAT_UNSUPPORTED_SUBTYPE
 
 /** Tiny skip past the buffered edge to force Media3 to cancel the in-flight Range request. */
 private val STALL_WATCHDOG_SKIP_PAST_BUFFERED_MS = PlayerStallWatchdogPolicy.SKIP_PAST_BUFFERED_MS

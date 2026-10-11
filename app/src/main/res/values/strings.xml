@@ -2395,6 +2395,7 @@
     <string name="iptv_preview_hint">OK: full screen  ·  Right arrow: favorite star</string>
     <string name="iptv_playlists_title">IPTV playlists</string>
     <string name="iptv_playlist_add">Add playlist</string>
+    <string name="iptv_playlist_edit">Edit playlist</string>
     <string name="iptv_playlist_save">Save</string>
     <string name="iptv_playlist_checking">Checking…</string>
     <string name="iptv_playlist_field_url">Playlist URL (m3u, m3u8)</string>

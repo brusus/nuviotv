@@ -160,7 +160,10 @@ object XtreamApi {
             is JsonObject -> episodes.entrySet().mapNotNull { (key, value) ->
                 (value as? JsonArray)?.let { key.toIntOrNull() to it }
             }
-            is JsonArray -> episodes.mapNotNull { (it as? JsonArray)?.let { list -> null to list } }
+            // A plain list of seasons carries no number: the position is the season.
+            is JsonArray -> episodes.mapIndexedNotNull { index, season ->
+                (season as? JsonArray)?.let { list -> (index + 1) to list }
+            }
             else -> emptyList()
         }
         return bySeason.flatMap { (seasonKey, list) ->

@@ -72,6 +72,22 @@ class XtreamApiTest {
         assertNull(channels[1].epgId)
     }
 
+    /**
+     * NUVIO-002. Some panels send "episodes" as a list of seasons instead of a map keyed by
+     * season number, with no "season" field on the episodes: the position is the season.
+     */
+    @Test
+    fun `episodes sent as a list of seasons keep their season numbers`() {
+        val json = """{"episodes":[
+            [{"id":"1","episode_num":1,"title":"A","container_extension":"mp4"}],
+            [{"id":"2","episode_num":1,"title":"B","container_extension":"mp4"},
+             {"id":"3","episode_num":2,"title":"C","container_extension":"mp4"}]
+        ]}"""
+        val episodes = XtreamApi.parseSeriesEpisodes(json)
+        assertEquals(listOf(1, 2, 2), episodes.map { it.season })
+        assertEquals(listOf("1", "2", "3"), episodes.map { it.id })
+    }
+
     @Test
     fun `movies keep their extension and added date`() {
         val json = """[{"name":"Film Uno","stream_id":5,"stream_icon":"https://img/1.jpg","rating":"7.5","added":"1713920000","category_id":"12","container_extension":"mkv"}]"""

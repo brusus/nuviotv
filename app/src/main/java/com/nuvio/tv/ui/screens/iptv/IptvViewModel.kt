@@ -61,6 +61,8 @@ data class IptvUiState(
     val activePlaylistId: String? = null,
     val showPlaylists: Boolean = false,
     val showAddPlaylist: Boolean = false,
+    /** The saved playlist being edited in the add dialog; null when adding a new one. */
+    val editingPlaylist: IptvPlaylist? = null,
     val addPlaylistBusy: Boolean = false,
     /** The Xtream account just entered was rejected by the server. */
     val addPlaylistRejected: Boolean = false,
@@ -169,7 +171,10 @@ data class IptvUiState(
     val searchChannels: List<IptvChannel>
         get() = searchQuery.trim().let { q ->
             if (q.length < 2) emptyList()
-            else channels.filter { it.name.contains(q, ignoreCase = true) }.take(MAX_SEARCH_RESULTS)
+            else channels.asSequence()
+                .filter { !isGroupHidden(it.groupTitle) && it.name.contains(q, ignoreCase = true) }
+                .take(MAX_SEARCH_RESULTS)
+                .toList()
         }
 
     val searchVodResults: List<IptvVodItem>
@@ -200,8 +205,13 @@ class IptvViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(IptvUiState())
     val uiState: StateFlow<IptvUiState> = _uiState.asStateFlow()
 
+    private var loadJob: kotlinx.coroutines.Job? = null
+
     fun load(forceRefresh: Boolean = false) {
-        viewModelScope.launch {
+        // Newest wins: a slow answer for the source shown before (another playlist, another
+        // country) must not land on top of the one selected since.
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             val worldSource = repository.worldSource.first()
             val worldCountry = repository.worldCountry.first()
             val playlists = repository.getPlaylists()
@@ -327,11 +337,20 @@ class IptvViewModel @Inject constructor(
     }
 
     fun openAddPlaylist() {
-        _uiState.update { it.copy(showPlaylists = false, showAddPlaylist = true, addPlaylistRejected = false) }
+        _uiState.update {
+            it.copy(showPlaylists = false, showAddPlaylist = true, addPlaylistRejected = false, editingPlaylist = null)
+        }
+    }
+
+    fun openEditPlaylist(id: String) {
+        val playlist = _uiState.value.playlists.firstOrNull { it.id == id } ?: return
+        _uiState.update {
+            it.copy(showPlaylists = false, showAddPlaylist = true, addPlaylistRejected = false, editingPlaylist = playlist)
+        }
     }
 
     fun dismissAddPlaylist() {
-        _uiState.update { it.copy(showAddPlaylist = false, addPlaylistBusy = false, addPlaylistRejected = false) }
+        _uiState.update { it.copy(showAddPlaylist = false, addPlaylistBusy = false, addPlaylistRejected = false, editingPlaylist = null) }
     }
 
     fun selectPlaylist(id: String) {
@@ -355,7 +374,7 @@ class IptvViewModel @Inject constructor(
         if (url.isBlank()) return
         savePlaylist(
             IptvPlaylist(
-                id = newPlaylistId(),
+                id = editedOrNewId(),
                 name = name.trim().ifEmpty { hostOf(url) },
                 type = IptvPlaylistType.M3U,
                 url = url.trim(),
@@ -370,7 +389,7 @@ class IptvViewModel @Inject constructor(
         if (server.isBlank() || username.isBlank() || password.isBlank()) return
         savePlaylist(
             IptvPlaylist(
-                id = newPlaylistId(),
+                id = editedOrNewId(),
                 name = name.trim().ifEmpty { hostOf(server) },
                 type = IptvPlaylistType.XTREAM,
                 url = server.trim(),
@@ -393,9 +412,10 @@ class IptvViewModel @Inject constructor(
             }
             repository.addPlaylist(playlist)
             if (_uiState.value.worldSource) repository.setWorldSource(false)
-            _uiState.update { it.copy(showAddPlaylist = false, addPlaylistBusy = false) }
+            _uiState.update { it.copy(showAddPlaylist = false, addPlaylistBusy = false, editingPlaylist = null) }
             resetForNewSource()
-            load()
+            // An edited playlist keeps its id: skip what was cached for the old address or login.
+            load(forceRefresh = true)
         }
     }
 
@@ -424,6 +444,9 @@ class IptvViewModel @Inject constructor(
 
     private fun newPlaylistId(): String = java.util.UUID.randomUUID().toString()
 
+    // Keeping the id keeps the favourites, recents and hidden groups tied to the playlist.
+    private fun editedOrNewId(): String = _uiState.value.editingPlaylist?.id ?: newPlaylistId()
+
     private fun hostOf(url: String): String =
         runCatching { java.net.URI(com.nuvio.tv.core.iptv.XtreamApi.baseUrl(url)).host }.getOrNull().orEmpty().ifEmpty { url.trim() }
 
@@ -447,7 +470,9 @@ class IptvViewModel @Inject constructor(
             IptvSection.SERIES -> IptvVodKind.SERIES
             IptvSection.LIVE, IptvSection.SEARCH -> return
         }
-        viewModelScope.launch {
+        // Same rule as load(): switching Movies/Series quickly must not mix the two lists.
+        vodJob?.cancel()
+        vodJob = viewModelScope.launch {
             _uiState.update { it.copy(vodLoading = true, vodError = false, vodItems = emptyList(), vodCategories = emptyList()) }
             repository.getVod(kind, forceRefresh).fold(
                 onSuccess = { (categories, items) ->
@@ -457,6 +482,8 @@ class IptvViewModel @Inject constructor(
             )
         }
     }
+
+    private var vodJob: kotlinx.coroutines.Job? = null
 
     fun selectVodCategory(id: String) {
         _uiState.update { it.copy(selectedVodCategoryId = id) }

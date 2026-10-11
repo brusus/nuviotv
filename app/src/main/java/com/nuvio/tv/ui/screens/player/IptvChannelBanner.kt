@@ -47,7 +47,9 @@ data class ChannelBannerInfo(
 /** Bottom banner shown for a few seconds when switching IPTV channels. */
 @Composable
 internal fun IptvChannelBanner(info: ChannelBannerInfo, modifier: Modifier = Modifier) {
-    val time = SimpleDateFormat("HH:mm", Locale.getDefault())
+    // Read through the configuration so the format follows a language change.
+    val locale = androidx.compose.ui.platform.LocalConfiguration.current.locales[0]
+    val time = androidx.compose.runtime.remember(locale) { SimpleDateFormat("HH:mm", locale) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier

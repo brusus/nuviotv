@@ -58,6 +58,12 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
     }
 
     var useParallelConnections: Boolean = PlayerSettings.DEFAULT_USE_PARALLEL_CONNECTIONS
+    /**
+     * The source allows one request at a time (an IPTV account): read the file through a
+     * single open-ended request. The chunk session opens a new request every few MB, and the
+     * provider counts each one as another connection until it answers HTTP 509.
+     */
+    var singleRequestSource: Boolean = false
     var parallelConnectionCount: Int = PlayerSettings.DEFAULT_PARALLEL_CONNECTION_COUNT
     var parallelChunkSizeKb: Int = PlayerSettings.DEFAULT_PARALLEL_CHUNK_SIZE_KB
     var nuvioPerformanceModeEnabled: Boolean = PlayerSettings.DEFAULT_NUVIO_PERFORMANCE_MODE_ENABLED
@@ -128,9 +134,10 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
 
         val mediaItem = mediaItemBuilder.build()
 
-        val mp4SessionMode = !useParallelConnections && !isHls && !isDash &&
+        val mp4SessionMode = !useParallelConnections && !singleRequestSource && !isHls && !isDash &&
             resolvedMimeType == MimeTypes.VIDEO_MP4
-        val useChunkSessionSource = (useParallelConnections || mp4SessionMode) && !isHls && !isDash
+        val useChunkSessionSource =
+            (useParallelConnections || mp4SessionMode) && !singleRequestSource && !isHls && !isDash
         parallelStartupPrefetchUnlocked.set(!useChunkSessionSource)
         val progressiveUpstreamFactory: DataSource.Factory = if (useChunkSessionSource) {
             if (mp4SessionMode) {

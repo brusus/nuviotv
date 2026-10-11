@@ -8,6 +8,7 @@ import com.nuvio.tv.domain.model.IptvPlaylist
 import com.nuvio.tv.domain.model.IptvVodItem
 import com.nuvio.tv.domain.model.IptvVodKind
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
@@ -47,6 +48,7 @@ class IptvStreamSource @Inject constructor(
     private class TitleInfo(val names: Set<String>, val year: Int?)
 
     private val titleCache = java.util.concurrent.ConcurrentHashMap<String, TitleInfo>()
+    private val lookupScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
     suspend fun findStreams(videoId: String, type: String, season: Int?, episode: Int?): List<IptvProviderStream> {
         val kind = when (type.lowercase()) {
@@ -92,13 +94,15 @@ class IptvStreamSource @Inject constructor(
                 .joinToString(" · ")
             if (kind == IptvVodKind.MOVIE) {
                 // The list rarely says the resolution; the details do, at the cost of a call.
-                val quality = hint ?: repository.getVodInfoOf(playlist, item).getOrNull()?.first?.videoHeight
+                // Bounded: a provider that does not answer must cost the resolution label,
+                // not the whole result.
+                val quality = hint ?: detailsOf(playlist, item, DETAILS_TIMEOUT_MS)?.first?.videoHeight
                     ?.let(::qualityFromHeight)
                 IptvProviderStream(playlist.id, label, item.name, XtreamApi.movieUrl(playlist, item), quality, headers, detail)
             } else {
                 val wantedSeason = season ?: return@mapNotNull null
                 val wantedEpisode = episode ?: return@mapNotNull null
-                val match = repository.getVodInfoOf(playlist, item).getOrNull()?.second
+                val match = detailsOf(playlist, item, EPISODES_TIMEOUT_MS)?.second
                     ?.firstOrNull { it.season == wantedSeason && it.episode == wantedEpisode }
                     ?: return@mapNotNull null
                 IptvProviderStream(
@@ -113,6 +117,15 @@ class IptvStreamSource @Inject constructor(
             }
         }
     }
+
+    /**
+     * Details of a title, waiting at most [timeoutMs]. The request itself runs in its own
+     * scope: a blocking network call cannot be interrupted by a timeout, so the wait is
+     * abandoned instead and the answer, when it comes, still lands in the session cache.
+     */
+    private suspend fun detailsOf(playlist: IptvPlaylist, item: IptvVodItem, timeoutMs: Long) =
+        lookupScope.async { repository.getVodInfoOf(playlist, item).getOrNull() }
+            .let { pending -> withTimeoutOrNull(timeoutMs) { pending.await() } }
 
     private fun matches(item: IptvVodItem, tmdbId: String, info: TitleInfo): Boolean {
         if (item.tmdbId != null) return item.tmdbId == tmdbId
@@ -158,6 +171,8 @@ class IptvStreamSource @Inject constructor(
         private const val TAG = "IptvStreamSource"
         private const val LOOKUP_TIMEOUT_MS = 15_000L
         private const val MAX_MATCHES = 4
+        private const val DETAILS_TIMEOUT_MS = 3_000L
+        private const val EPISODES_TIMEOUT_MS = 8_000L
         private val YEAR_REGEX = Regex("\\((19\\d{2}|20\\d{2})\\)")
         private val BRACKETS_REGEX = Regex("\\([^)]*\\)|\\[[^]]*]")
         private val TAGS_REGEX = Regex("\\b(4k|uhd|fhd|hd|sd|hdr|hevc|h265|h264|x265|x264|1080p|2160p|720p|ita|eng|sub|multi)\\b")

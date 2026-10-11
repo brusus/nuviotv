@@ -559,7 +559,11 @@ internal fun PlayerRuntimeController.initializePlayer(
                 mediaSourceFactory.vodCacheEnabled = false
             }
 
-            if (playerSettings.parallelNetworkEnabled) {
+            // An IPTV account usually allows one connection: several parallel range requests
+            // on its stream are answered with HTTP 509. Those always play on a single one.
+            val singleConnectionSource = com.nuvio.tv.core.iptv.XtreamApi.isAccountStreamUrl(url)
+            mediaSourceFactory.singleRequestSource = singleConnectionSource
+            if (playerSettings.parallelNetworkEnabled && !singleConnectionSource) {
                 mediaSourceFactory.useParallelConnections = playerSettings.useParallelConnections
                 mediaSourceFactory.parallelConnectionCount = playerSettings.parallelConnectionCount
                 mediaSourceFactory.parallelChunkSizeKb = playerSettings.parallelChunkSizeKb

@@ -243,6 +243,7 @@ fun IptvScreen(
             activeId = uiState.activePlaylist?.id,
             onSelect = viewModel::selectPlaylist,
             onDelete = viewModel::deletePlaylist,
+            onEdit = viewModel::openEditPlaylist,
             onAdd = viewModel::openAddPlaylist,
             onDismiss = viewModel::dismissPlaylists
         )
@@ -251,6 +252,7 @@ fun IptvScreen(
         IptvAddPlaylistDialog(
             busy = uiState.addPlaylistBusy,
             rejected = uiState.addPlaylistRejected,
+            editing = uiState.editingPlaylist,
             onAddM3u = viewModel::addM3uPlaylist,
             onAddXtream = viewModel::addXtreamPlaylist,
             onDismiss = viewModel::dismissAddPlaylist

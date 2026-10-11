@@ -158,11 +158,9 @@ class VpnManager @Inject constructor(
      */
     private fun dropPooledConnections() {
         ipCheckClient.connectionPool.evictAll()
-        // Catalogue, metadata, images, plugins: every pool the app keeps (see the registry).
+        // Catalogue, metadata, images, plugins, player: every pool the app keeps registers
+        // itself (see the registry).
         com.nuvio.tv.core.network.ConnectionPoolRegistry.evictAll()
-        runCatching {
-            com.nuvio.tv.ui.screens.player.NuvioExoPlayerPerformanceHelper.sharedConnectionPool.evictAll()
-        }
     }
 
     fun connect() {
