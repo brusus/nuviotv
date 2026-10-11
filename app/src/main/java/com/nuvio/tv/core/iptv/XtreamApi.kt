@@ -200,7 +200,7 @@ object XtreamApi {
             cast = first("cast", "actors"),
             director = first("director"),
             backdropUrl = backdrop,
-            videoHeight = (info.get("video") as? JsonObject)?.str("height")?.toIntOrNull() ?: 0
+            videoHeight = videoHeight(info.get("video") as? JsonObject)
         )
     }
 
@@ -229,6 +229,21 @@ object XtreamApi {
     private fun array(json: String): JsonArray = parse(json) as? JsonArray ?: JsonArray()
 
     private fun JsonObject.obj(key: String): JsonObject? = get(key) as? JsonObject
+
+    /** Height from the stream description; derived from the width when only that is given. */
+    private fun videoHeight(video: JsonObject?): Int {
+        if (video == null) return 0
+        val height = (video.str("height") ?: video.str("coded_height"))?.toIntOrNull() ?: 0
+        if (height > 0) return height
+        val width = (video.str("width") ?: video.str("coded_width"))?.toIntOrNull() ?: 0
+        return when {
+            width >= 3800 -> 2160
+            width >= 1900 -> 1080
+            width >= 1260 -> 720
+            width > 0 -> 480
+            else -> 0
+        }
+    }
 
     private fun JsonObject.tmdbId(): String? =
         (str("tmdb") ?: str("tmdb_id"))?.trim()?.takeIf { it.isNotEmpty() && it != "0" }

@@ -194,7 +194,7 @@ class CollectionManagementViewModel @Inject constructor(
                 // url is typed/pasted by the user with no restriction on what it points
                 // to - same class of risk as an addon-supplied URL, so it gets the same
                 // SSRF hardening (see ssrfProtected()).
-                val client = okhttp3.OkHttpClient.Builder()
+                val client = okhttp3.OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
                     .ssrfProtected()
                     .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
                     .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)

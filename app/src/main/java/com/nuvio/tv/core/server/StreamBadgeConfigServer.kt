@@ -42,7 +42,7 @@ class StreamBadgeConfigServer(
     // sourceUrl is user-controlled: whoever holds the QR token can POST here and ask the
     // server to fetch an arbitrary URL - see ssrfProtected().
     private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+        OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
             .ssrfProtected()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)

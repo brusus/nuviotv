@@ -172,7 +172,7 @@ class ExternalExtensionLoader @Inject constructor(
     @ApplicationContext private val context: Context,
     private val extractorRegistry: ExternalExtractorRegistry
 ) {
-    private val httpClient = OkHttpClient.Builder()
+    private val httpClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         // Extension .cs3 packages are downloaded from repo-maintainer-controlled URLs -
         // see SsrfProtectedDns.
         .dns(SsrfProtectedDns())

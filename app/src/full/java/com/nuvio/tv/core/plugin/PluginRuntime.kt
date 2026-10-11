@@ -57,7 +57,7 @@ class PluginRuntime @Inject constructor(
 
     private val gson: Gson = GsonBuilder().create()
 
-    private val httpClient = OkHttpClient.Builder()
+    private val httpClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         // Scraper-chosen URLs get SSRF hardening (blocks loopback/private/link-local
         // targets, including via redirects and DNS rebinding) - see SsrfProtectedDns.
         .dns(com.nuvio.tv.core.network.SsrfProtectedDns())

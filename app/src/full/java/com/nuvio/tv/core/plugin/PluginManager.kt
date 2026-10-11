@@ -87,7 +87,7 @@ class PluginManager @Inject constructor(
     
     private val manifestAdapter = moshi.adapter(PluginManifest::class.java)
     
-    private val httpClient = OkHttpClient.Builder()
+    private val httpClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         // Repository manifests are remote, repo-maintainer-controlled content - see
         // SsrfProtectedDns.
         .dns(com.nuvio.tv.core.network.SsrfProtectedDns())

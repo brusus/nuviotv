@@ -524,7 +524,7 @@ class StreamRepositoryImpl @Inject constructor(
                     url = match.url,
                     addonName = IPTV_PROVIDER_NAME,
                     addonLogo = null,
-                    description = match.playlistName,
+                    description = listOf(match.detail, match.playlistName).filter { it.isNotBlank() }.joinToString(" · "),
                     behaviorHints = StreamBehaviorHints(
                         notWebReady = null,
                         // Same account and quality: the next episode can follow by itself.

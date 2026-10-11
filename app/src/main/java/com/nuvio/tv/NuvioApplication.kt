@@ -118,7 +118,7 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
                 maxRequests = 32
                 maxRequestsPerHost = 16
             }
-            OkHttpClient.Builder()
+            OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
                 .dispatcher(imageDispatcher)
                 // Image URLs come from addons, metadata providers, and catalogs - none
                 // of it trusted any more than a pasted import URL - so this gets the

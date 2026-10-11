@@ -49,7 +49,7 @@ object PluginRuntimeHooks {
             }
 
             try {
-                app.baseClient = OkHttpClient.Builder()
+                app.baseClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
                     // CloudStream extensions choose their own request URLs at runtime,
                     // same trust boundary as the QuickJS plugin sandbox - see SsrfProtectedDns.
                     .dns(com.nuvio.tv.core.network.SsrfProtectedDns())

@@ -65,7 +65,7 @@ class VpnManager @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val backend by lazy { GoBackend(context) }
-    private val ipCheckClient = OkHttpClient.Builder()
+    private val ipCheckClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
@@ -158,6 +158,8 @@ class VpnManager @Inject constructor(
      */
     private fun dropPooledConnections() {
         ipCheckClient.connectionPool.evictAll()
+        // Catalogue, metadata, images, plugins: every pool the app keeps (see the registry).
+        com.nuvio.tv.core.network.ConnectionPoolRegistry.evictAll()
         runCatching {
             com.nuvio.tv.ui.screens.player.NuvioExoPlayerPerformanceHelper.sharedConnectionPool.evictAll()
         }
@@ -196,6 +198,9 @@ class VpnManager @Inject constructor(
                     delay(TEARDOWN_SETTLE_MS)
                 }
                 backend.setState(tunnel, Tunnel.State.UP, scopedConfig)
+                // The route changes now, not when the handshake completes: connections opened
+                // before this point are already dead.
+                dropPooledConnections()
                 bringUpConfirmedOrRevert(scopedConfig)
             } catch (e: BackendException) {
                 if (e.reason == BackendException.Reason.VPN_NOT_AUTHORIZED) {
@@ -341,6 +346,7 @@ class VpnManager @Inject constructor(
         try {
             _connectionState.value = VpnConnectionState.CONNECTING
             backend.setState(tunnel, Tunnel.State.UP, scopedConfig)
+            dropPooledConnections()
             bringUpConfirmedOrRevert(scopedConfig)
         } catch (e: CancellationException) {
             throw e

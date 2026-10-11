@@ -31,7 +31,7 @@ class TorrServerBinary @Inject constructor(
     }
 
     private var process: Process? = null
-    private val healthClient = OkHttpClient.Builder()
+    private val healthClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         .dns(IPv4FirstDns())
         .connectTimeout(2, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.SECONDS)

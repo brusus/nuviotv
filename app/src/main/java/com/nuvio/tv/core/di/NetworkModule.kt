@@ -103,7 +103,7 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
-        return OkHttpClient.Builder()
+        return OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
             .dns(IPv4FirstDns())
             // Keep separate from the old trust-all cache. Cached responses bypass a new TLS handshake.
             .cache(Cache(File(context.cacheDir, "http_cache_v2"), 50L * 1024 * 1024)) // 50 MB disk cache
@@ -196,7 +196,7 @@ object NetworkModule {
     @Provides
     @Singleton
     @Named("customServerAuth")
-    fun provideCustomServerAuthHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    fun provideCustomServerAuthHttpClient(): OkHttpClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         .dns(IPv4FirstDns())
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -219,7 +219,7 @@ object NetworkModule {
     @Singleton
     @Named("directDebrid")
     fun provideDirectDebridOkHttpClient(): OkHttpClient =
-        OkHttpClient.Builder()
+        OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
             .dns(IPv4FirstDns())
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
@@ -238,7 +238,7 @@ object NetworkModule {
     @Provides
     @Singleton
     @Named("simkl")
-    fun provideSimklOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    fun provideSimklOkHttpClient(): OkHttpClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         .dns(IPv4FirstDns())
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)

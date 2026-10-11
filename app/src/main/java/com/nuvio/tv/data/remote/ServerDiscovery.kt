@@ -136,7 +136,7 @@ internal object ServerDiscoveryPolicy {
 
 @Singleton
 class ServerDiscoveryService @Inject constructor() {
-    private val client = OkHttpClient.Builder()
+    private val client = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)

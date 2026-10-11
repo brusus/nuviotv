@@ -147,7 +147,7 @@ class InAppYouTubeExtractor @Inject constructor() {
     private val gson = Gson()
 
     private val httpClient by lazy {
-        OkHttpClient.Builder()
+        OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
             .dns(com.nuvio.tv.core.network.IPv4FirstDns())
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -764,7 +764,7 @@ class InAppYouTubeExtractor @Inject constructor() {
     }
 
     private val probeClient by lazy {
-        OkHttpClient.Builder()
+        OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
             .dns(com.nuvio.tv.core.network.IPv4FirstDns())
             .connectTimeout(2, TimeUnit.SECONDS)
             .readTimeout(2, TimeUnit.SECONDS)

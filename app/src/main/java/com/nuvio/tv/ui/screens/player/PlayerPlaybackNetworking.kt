@@ -98,7 +98,7 @@ internal object PlayerPlaybackNetworking {
             maxRequests = 64
             maxRequestsPerHost = 32
         }
-        OkHttpClient.Builder()
+        OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
             .dispatcher(dispatcher)
             .dns(IPv4FirstDns())
             .eventListenerFactory(PlaybackConnectionEvents)
@@ -123,7 +123,7 @@ internal object PlayerPlaybackNetworking {
             maxRequests = 64
             maxRequestsPerHost = 32
         }
-        OkHttpClient.Builder()
+        OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
             .dispatcher(dispatcher)
             .dns(IPv4FirstDns())
             .eventListenerFactory(PlaybackConnectionEvents)

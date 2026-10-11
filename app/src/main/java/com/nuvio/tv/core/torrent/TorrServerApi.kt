@@ -41,7 +41,7 @@ class TorrServerApi @Inject constructor(
         private val JSON_TYPE = "application/json".toMediaType()
     }
 
-    private val client = OkHttpClient.Builder()
+    private val client = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         .dns(IPv4FirstDns())
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)

@@ -24,7 +24,9 @@ data class IptvProviderStream(
     val url: String,
     /** "4K", "1080p", "720p", or null when the provider gives no hint. */
     val quality: String?,
-    val headers: Map<String, String>?
+    val headers: Map<String, String>?,
+    /** What tells this copy from another of the same title: its category and file type. */
+    val detail: String = ""
 )
 
 /**
@@ -82,12 +84,17 @@ class IptvStreamSource @Inject constructor(
         val label = playlist.name.ifBlank { "IPTV" }
 
         return matches.mapNotNull { item ->
-            val hint = qualityHint(item.name) ?: qualityHint(categoryNames[item.categoryId].orEmpty())
+            val category = categoryNames[item.categoryId].orEmpty()
+            val hint = qualityHint(item.name) ?: qualityHint(category)
+            // A provider often lists one title several times (SD, HD, 4K copies in different
+            // categories): the category and the file type say which is which.
+            val detail = listOfNotNull(category.takeIf { it.isNotBlank() }, item.containerExtension?.uppercase())
+                .joinToString(" · ")
             if (kind == IptvVodKind.MOVIE) {
                 // The list rarely says the resolution; the details do, at the cost of a call.
                 val quality = hint ?: repository.getVodInfoOf(playlist, item).getOrNull()?.first?.videoHeight
                     ?.let(::qualityFromHeight)
-                IptvProviderStream(playlist.id, label, item.name, XtreamApi.movieUrl(playlist, item), quality, headers)
+                IptvProviderStream(playlist.id, label, item.name, XtreamApi.movieUrl(playlist, item), quality, headers, detail)
             } else {
                 val wantedSeason = season ?: return@mapNotNull null
                 val wantedEpisode = episode ?: return@mapNotNull null
@@ -100,7 +107,8 @@ class IptvStreamSource @Inject constructor(
                     "${item.name} S${wantedSeason}E$wantedEpisode",
                     XtreamApi.episodeUrl(playlist, match),
                     hint,
-                    headers
+                    headers,
+                    detail
                 )
             }
         }

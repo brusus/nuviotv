@@ -38,7 +38,7 @@ data class ExternalRepoParseResult(
 class ExternalRepoParser @Inject constructor(
     private val moshi: Moshi
 ) {
-    private val httpClient = OkHttpClient.Builder()
+    private val httpClient = OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
         // Repo listing/plugin URLs are remote, repo-maintainer-controlled - see SsrfProtectedDns.
         .dns(SsrfProtectedDns())
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)

@@ -1519,7 +1519,7 @@ class StreamScreenViewModel @Inject constructor(
                 playUrl = localUrl
                 isTorrentStreamStarted = true
 
-                val client = okhttp3.OkHttpClient.Builder()
+                val client = okhttp3.OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool())
                     .dns(com.nuvio.tv.core.network.IPv4FirstDns())
                     .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                     .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)

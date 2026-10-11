@@ -69,7 +69,7 @@ private var badgeImageLoader: ImageLoader? = null
 // main ImageLoader (its own small memory/disk cache scoped to badge icons), so without its
 // own callFactory it would fall back to Coil's default networking and bypass that
 // protection entirely - explicit callFactory here keeps it covered.
-private val badgeHttpClient by lazy { okhttp3.OkHttpClient.Builder().ssrfProtected().build() }
+private val badgeHttpClient by lazy { okhttp3.OkHttpClient.Builder().connectionPool(com.nuvio.tv.core.network.ConnectionPoolRegistry.newPool()).ssrfProtected().build() }
 
 private fun getBadgeImageLoader(context: android.content.Context): ImageLoader {
     badgeImageLoader?.let { return it }
